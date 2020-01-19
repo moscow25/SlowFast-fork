@@ -88,9 +88,15 @@ class Kinetics(torch.utils.data.Dataset):
         self._labels = []
         self._spatial_temporal_idx = []
         with open(path_to_file, "r") as f:
+            print('Reading file %s' % path_to_file)
             for clip_idx, path_label in enumerate(f.read().splitlines()):
-                assert len(path_label.split()) == 2
-                path, label = path_label.split()
+                #assert len(path_label.split()) == 2
+                #path, label = path_label.split()
+                path, label = path_label.split()[:2]
+                print('Clip %d' % clip_idx)
+                print((path, label))
+                # TODO: Table convert text to emum
+                label = 10
                 for idx in range(self._num_clips):
                     self._path_to_videos.append(
                         os.path.join(self.cfg.DATA.PATH_PREFIX, path)

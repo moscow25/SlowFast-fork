@@ -5,6 +5,7 @@
 
 import numpy as np
 import torch
+import tqdm
 
 import slowfast.utils.checkpoint as cu
 import slowfast.utils.distributed as du
@@ -39,7 +40,8 @@ def perform_test(test_loader, model, test_meter, cfg):
     model.eval()
     test_meter.iter_tic()
 
-    for cur_iter, (inputs, labels, video_idx, meta) in enumerate(test_loader):
+    for cur_iter, (inputs, labels, video_idx, meta) in tqdm.tqdm(enumerate(test_loader), total=len(test_loader)):
+        logger.info('in the loop...')
         # Transfer the data to the current GPU device.
         if isinstance(inputs, (list,)):
             for i in range(len(inputs)):
@@ -48,6 +50,7 @@ def perform_test(test_loader, model, test_meter, cfg):
             inputs = inputs.cuda(non_blocking=True)
 
         # Transfer the data to the current GPU device.
+        logger.info('moving labels to CUDA')
         labels = labels.cuda()
         video_idx = video_idx.cuda()
         for key, val in meta.items():

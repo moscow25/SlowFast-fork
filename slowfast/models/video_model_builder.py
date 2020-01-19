@@ -132,7 +132,7 @@ class SlowFastModel(nn.Module):
     https://arxiv.org/pdf/1812.03982.pdf
     """
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, debug=True):
         """
         The `__init__` method of any subclass should also contain these
             arguments.
@@ -143,12 +143,14 @@ class SlowFastModel(nn.Module):
         super(SlowFastModel, self).__init__()
         self.enable_detection = cfg.DETECTION.ENABLE
         self.num_pathways = 2
-        self._construct_network(cfg)
+        if debug:
+            print('building SlowFastModel')
+        self._construct_network(cfg, debug)
         init_helper.init_weights(
             self, cfg.MODEL.FC_INIT_STD, cfg.RESNET.ZERO_INIT_FINAL_BN
         )
 
-    def _construct_network(self, cfg):
+    def _construct_network(self, cfg, debug=False):
         """
         Builds a SlowFast model. The first pathway is the Slow pathway and the
             second pathway is the Fast pathway.
@@ -157,6 +159,8 @@ class SlowFastModel(nn.Module):
             cfg (CfgNode): model building configs, details are in the
                 comments of the config file.
         """
+        if debug:
+            print('building the network time')
         assert cfg.MODEL.ARCH in _POOL1.keys()
         pool_size = _POOL1[cfg.MODEL.ARCH]
         assert len({len(pool_size), self.num_pathways}) == 1
@@ -355,7 +359,42 @@ class SlowFastModel(nn.Module):
                 dropout_rate=cfg.MODEL.DROPOUT_RATE,
             )
 
-    def forward(self, x, bboxes=None):
+            if not debug:
+                return
+
+            # HACK -- add additional output heads to the network. Do we crash?
+            if debug:
+                print('adding extra output head')
+
+            NUM_PITCH_TYPES = 5
+            self.head_pitch_type = head_helper.ResNetBasicHead(
+                dim_in=[
+                    width_per_group * 32,
+                    width_per_group * 32 // cfg.SLOWFAST.BETA_INV,
+                ],
+                #num_classes=cfg.MODEL.NUM_CLASSES,
+                num_classes=NUM_PITCH_TYPES,
+                pool_size=[
+                    [
+                        cfg.DATA.NUM_FRAMES
+                        // cfg.SLOWFAST.ALPHA
+                        // pool_size[0][0],
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][1],
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][2],
+                    ],
+                    [
+                        cfg.DATA.NUM_FRAMES // pool_size[1][0],
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][1],
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][2],
+                    ],
+                ],
+                dropout_rate=cfg.MODEL.DROPOUT_RATE,
+            )
+
+
+    def forward(self, x, bboxes=None, debug=True):
+        if debug:
+            print('model *forward* pass')
         x = self.s1(x)
         x = self.s1_fuse(x)
         x = self.s2(x)
@@ -369,10 +408,24 @@ class SlowFastModel(nn.Module):
         x = self.s4_fuse(x)
         x = self.s5(x)
         if self.enable_detection:
-            x = self.head(x, bboxes)
+            x1 = self.head(x, bboxes)
         else:
-            x = self.head(x)
-        return x
+
+            if debug:
+                print('preparing output')
+                print(len(x))
+
+            x1 = self.head(x)
+            if debug:
+                print('output shape')
+                print(x1.shape)
+            # Hack -- any additional heads
+            y = self.head_pitch_type(x)
+            if debug:
+                print('second output shape')
+                print(y.shape)
+
+        return x1
 
 
 class ResNetModel(nn.Module):
