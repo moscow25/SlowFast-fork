@@ -5,6 +5,7 @@ import os
 import random
 import torch
 import torch.utils.data
+import pandas as pd
 
 from . import decoder as decoder
 from . import transform as transform
@@ -77,6 +78,7 @@ class Kinetics(torch.utils.data.Dataset):
         """
         Construct the video loader.
         """
+        print('Kinetics data loader...')
         path_to_file = os.path.join(
             self.cfg.DATA.PATH_TO_DATA_DIR, "{}.csv".format(self.mode)
         )
@@ -87,16 +89,24 @@ class Kinetics(torch.utils.data.Dataset):
         self._path_to_videos = []
         self._labels = []
         self._spatial_temporal_idx = []
-        with open(path_to_file, "r") as f:
+
+        # Handle as CSV file from pandas instead
+        #with open(path_to_file, "r") as f:
+        df = pd.read_csv(path_to_file)
+        if True:
             print('Reading file %s' % path_to_file)
-            for clip_idx, path_label in enumerate(f.read().splitlines()):
+            #for clip_idx, path_label in enumerate(f.read().splitlines()):
+            for clip_idx, data in df.iterrows():
+                print('------------------------')
+                print(clip_idx, data)
                 #assert len(path_label.split()) == 2
                 #path, label = path_label.split()
-                path, label = path_label.split()[:2]
+                #path, label = path_label.split()[:2]
+                path, label = data['filepath'], data['pitchType']
                 print('Clip %d' % clip_idx)
                 print((path, label))
                 # TODO: Table convert text to emum
-                label = 10
+                label = 1
                 for idx in range(self._num_clips):
                     self._path_to_videos.append(
                         os.path.join(self.cfg.DATA.PATH_PREFIX, path)
