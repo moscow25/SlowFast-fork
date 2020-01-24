@@ -122,7 +122,9 @@ class FuseFastToSlow(nn.Module):
         x_s_fuse = torch.cat([x_s, fuse], 1)
         return [x_s_fuse, x_f]
 
-
+# TODO: Import from common utils/data file
+NUM_PITCH_TYPES = 8
+# TODO: Add other class types.
 class SlowFastModel(nn.Module):
     """
     SlowFast model builder for SlowFast network.
@@ -366,7 +368,6 @@ class SlowFastModel(nn.Module):
             if debug:
                 print('adding extra output head')
 
-            NUM_PITCH_TYPES = 5
             self.head_pitch_type = head_helper.ResNetBasicHead(
                 dim_in=[
                     width_per_group * 32,
@@ -393,8 +394,8 @@ class SlowFastModel(nn.Module):
 
 
     def forward(self, x, bboxes=None, debug=True):
-        if debug:
-            print('model *forward* pass')
+        #if debug:
+        #    print('model *forward* pass')
         x = self.s1(x)
         x = self.s1_fuse(x)
         x = self.s2(x)
@@ -411,21 +412,25 @@ class SlowFastModel(nn.Module):
             x1 = self.head(x, bboxes)
         else:
 
-            if debug:
-                print('preparing output')
-                print(len(x))
+            #if debug:
+            #    print('preparing output')
+            #    print(len(x))
 
             x1 = self.head(x)
-            if debug:
-                print('output shape')
-                print(x1.shape)
+            #if debug:
+            #    print('output shape')
+            #    print(x1.shape)
             # Hack -- any additional heads
             y = self.head_pitch_type(x)
-            if debug:
-                print('second output shape')
-                print(y.shape)
+            #if debug:
+            #    print('second output shape')
+            #    print(y.shape)
 
-        return x1
+        # TODO: Manage outputs -- how many heads, how is it handled -- named outputs?
+        if debug:
+            return y
+        else:
+            return x1
 
 
 class ResNetModel(nn.Module):

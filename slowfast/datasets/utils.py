@@ -9,6 +9,11 @@ import cv2
 
 logger = logging.getLogger(__name__)
 
+# Pitch specific enums & functions
+PITCH_TYPES = ['Other', 'FastBall', 'TwoSeamFastBall', 'Cutter', 'ChangeUp',
+    'CurveBall', 'Slider', 'Splitter']
+PITCH_TYPE_ENUM = {'FastBall':1, 'TwoSeamFastBall':2, 'Cutter':3, 'ChangeUp':4,
+    'CurveBall':5, 'Slider':6, 'Splitter':7, 'Other':0}
 
 def retry_load_images(image_paths, retry=10, backend="pytorch"):
     """

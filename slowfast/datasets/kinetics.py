@@ -106,7 +106,7 @@ class Kinetics(torch.utils.data.Dataset):
                 print('Clip %d' % clip_idx)
                 print((path, label))
                 # TODO: Table convert text to emum
-                label = 1
+                label = utils.PITCH_TYPE_ENUM[label]
                 for idx in range(self._num_clips):
                     self._path_to_videos.append(
                         os.path.join(self.cfg.DATA.PATH_PREFIX, path)

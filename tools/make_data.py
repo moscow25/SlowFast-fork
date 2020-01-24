@@ -71,7 +71,7 @@ def main():
     print(missing_vids)
 
     # Extract columns of interest
-    SAVE_COLS = ['filepath', 'pitchType', 'Is Strike', 'speed', 'spin', 'trueSpin', 'spinEfficiency']
+    SAVE_COLS = ['filepath', 'Release Frame', 'pitchType', 'Is Strike', 'speed', 'spin', 'trueSpin', 'spinEfficiency']
     merge_df = merge_df[SAVE_COLS]
 
 
