@@ -72,9 +72,9 @@ class Kinetics(torch.utils.data.Dataset):
             )
 
         logger.info("Constructing Kinetics {}...".format(mode))
-        self._construct_loader()
+        self._construct_loader(debug=False)
 
-    def _construct_loader(self):
+    def _construct_loader(self, debug=False):
         """
         Construct the video loader.
         """
@@ -87,8 +87,11 @@ class Kinetics(torch.utils.data.Dataset):
         )
 
         self._path_to_videos = []
+        self._center_frames = []
         self._labels = []
         self._spatial_temporal_idx = []
+        # Other fields we may want to debug:
+        self._info = []
 
         # Handle as CSV file from pandas instead
         #with open(path_to_file, "r") as f:
@@ -98,19 +101,25 @@ class Kinetics(torch.utils.data.Dataset):
             #for clip_idx, path_label in enumerate(f.read().splitlines()):
             for clip_idx, data in df.iterrows():
                 print('------------------------')
-                print(clip_idx, data)
+                # Useful, but too much display
+                if debug:
+                    print(clip_idx, data)
                 #assert len(path_label.split()) == 2
                 #path, label = path_label.split()
                 #path, label = path_label.split()[:2]
-                path, label = data['filepath'], data['pitchType']
+                path, label, center_frame = data['filepath'], data['pitchType'], data['Release Frame']
                 print('Clip %d' % clip_idx)
-                print((path, label))
+                print((path, label, center_frame))
                 # TODO: Table convert text to emum
                 label = utils.PITCH_TYPE_ENUM[label]
                 for idx in range(self._num_clips):
                     self._path_to_videos.append(
                         os.path.join(self.cfg.DATA.PATH_PREFIX, path)
                     )
+                    # HACK -- center frame if video -- if provided
+                    self._center_frames.append(float(center_frame))
+                    # Save all the info (for debug purpose)
+                    self._info.append({k:data[k] for k in data.keys()})
                     self._labels.append(int(label))
                     self._spatial_temporal_idx.append(idx)
                     self._video_meta[clip_idx * self._num_clips + idx] = {}
@@ -125,7 +134,7 @@ class Kinetics(torch.utils.data.Dataset):
             )
         )
 
-    def __getitem__(self, index):
+    def __getitem__(self, index, hack_center_frame=200., debug=False):
         """
         Given the video index, return the list of frames, label, and video
         index if the video can be fetched and decoded successfully, otherwise
@@ -140,6 +149,8 @@ class Kinetics(torch.utils.data.Dataset):
                 decoded, then return the index of the video. If not, return the
                 index of the video replacement that can be decoded.
         """
+        if debug:
+            print('Calling Kinetics __getitem__()')
         if self.mode in ["train", "val"]:
             # -1 indicates random sampling.
             temporal_sample_index = -1
@@ -147,6 +158,9 @@ class Kinetics(torch.utils.data.Dataset):
             min_scale = self.cfg.DATA.TRAIN_JITTER_SCALES[0]
             max_scale = self.cfg.DATA.TRAIN_JITTER_SCALES[1]
             crop_size = self.cfg.DATA.TRAIN_CROP_SIZE
+            if debug:
+                print('[temporal_sample_index, spatial_sample_index, min_scale, max_scale, crop_size]')
+                print([temporal_sample_index, spatial_sample_index, min_scale, max_scale, crop_size])
         elif self.mode in ["test"]:
             temporal_sample_index = (
                 self._spatial_temporal_idx[index]
@@ -177,18 +191,25 @@ class Kinetics(torch.utils.data.Dataset):
                     self._path_to_videos[index],
                     self.cfg.DATA_LOADER.ENABLE_MULTI_THREAD_DECODE,
                 )
+                hack_center_frame = self._center_frames[index]
             except Exception as e:
                 logger.info(
                     "Failed to load video from {} with error {}".format(
                         self._path_to_videos[index], e
                     )
                 )
+
             # Select a random video if the current video was not able to access.
             if video_container is None:
+                print('<ERROR>: take random video')
                 index = random.randint(0, len(self._path_to_videos) - 1)
                 continue
+            else:
+                if debug:
+                    print('Found video!')
 
             # Decode video. Meta info is used to perform selective decoding.
+            #print('decoding frames...')
             frames = decoder.decode(
                 video_container,
                 self.cfg.DATA.SAMPLING_RATE,
@@ -197,11 +218,20 @@ class Kinetics(torch.utils.data.Dataset):
                 self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
                 video_meta=self._video_meta[index],
                 target_fps=30,
+                hack_center_frame=hack_center_frame,
+                debug=debug,
             )
+            if not(frames is None):
+                if debug:
+                    print('Got frames')
+                    print(frames.shape)
+            else:
+                print('Frames fail!')
 
             # If decoding failed (wrong format, video is too short, and etc),
             # select another video.
             if frames is None:
+                print('<ERROR>: take random video')
                 index = random.randint(0, len(self._path_to_videos) - 1)
                 continue
 

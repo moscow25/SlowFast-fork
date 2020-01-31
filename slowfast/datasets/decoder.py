@@ -7,7 +7,7 @@ import random
 import torch
 
 
-def temporal_sampling(frames, start_idx, end_idx, num_samples):
+def temporal_sampling(frames, start_idx, end_idx, num_samples, debug=False):
     """
     Given the start and end frame index, sample num_samples frames between
     the start and end with equal interval.
@@ -21,13 +21,17 @@ def temporal_sampling(frames, start_idx, end_idx, num_samples):
         frames (tersor): a tensor of temporal sampled video frames, dimension is
             `num clip frames` x `channel` x `height` x `width`.
     """
+    if debug:
+        print('Enter temporal_sampling: [frames,start_idx,end_idx,num_samples] %s' % ([frames.shape,start_idx,end_idx,num_samples]))
     index = torch.linspace(start_idx, end_idx, num_samples)
     index = torch.clamp(index, 0, frames.shape[0] - 1).long()
     frames = torch.index_select(frames, 0, index)
+    if debug:
+        print('Exit temporal_sampling with shape %s' % str(frames.shape))
     return frames
 
 
-def get_start_end_idx(video_size, clip_size, clip_idx, num_clips):
+def get_start_end_idx(video_size, clip_size, clip_idx, num_clips, hack_center_frame=0., debug=False):
     """
     Sample a clip of size clip_size from a video of size video_size and
     return the indices of the first and last frame of the clip. If clip_idx is
@@ -48,7 +52,15 @@ def get_start_end_idx(video_size, clip_size, clip_idx, num_clips):
         end_idx (int): the end frame index.
     """
     delta = max(video_size - clip_size, 0)
-    if clip_idx == -1:
+    if hack_center_frame > 0.:
+        # Choose a window around hack_center_frame
+        if debug:
+            print('HACK: requesting center around frame %s' % hack_center_frame)
+        start_idx = hack_center_frame - (clip_size / 2.)
+        jitter = clip_size / 4. # Hack -- how much we jitter in time
+        start_idx += jitter / 2. - random.uniform(0, jitter)
+        start_idx = max(1.,start_idx)
+    elif clip_idx == -1:
         # Random temporal sampling.
         start_idx = random.uniform(0, delta)
     else:
@@ -101,7 +113,8 @@ def pyav_decode_stream(
 
 
 def pyav_decode(
-    container, sampling_rate, num_frames, clip_idx, num_clips=10, target_fps=30
+    container, sampling_rate, num_frames, clip_idx, num_clips=10, target_fps=30,
+    hack_center_frame=0., debug=False,
 ):
     """
     Convert the video from its original fps to the target_fps. If the video
@@ -135,6 +148,9 @@ def pyav_decode(
     frames_length = container.streams.video[0].frames
     duration = container.streams.video[0].duration
 
+    if debug:
+        print('pyav_decode function! [fps, target_fps, frames_length, duration] %s' % str([fps, target_fps, frames_length, duration]))
+
     if duration is None:
         # If failed to fetch the decoding information, decode the entire video.
         decode_all_video = True
@@ -147,10 +163,15 @@ def pyav_decode(
             sampling_rate * num_frames / target_fps * fps,
             clip_idx,
             num_clips,
+            hack_center_frame=hack_center_frame,
+            debug=debug,
         )
         timebase = duration / frames_length
         video_start_pts = int(start_idx * timebase)
         video_end_pts = int(end_idx * timebase)
+
+        if debug:
+            print('Performed selective decoding: [start_idx,end_idx,timebase,video_start_pts,video_end_pts] %s' % str([start_idx,end_idx,timebase,video_start_pts,video_end_pts]))
 
     frames = None
     # If video stream was found, fetch video frames from the video.
@@ -166,6 +187,9 @@ def pyav_decode(
 
         frames = [frame.to_rgb().to_ndarray() for frame in video_frames]
         frames = torch.as_tensor(np.stack(frames))
+
+        if debug:
+            print('Fetched video frames from video: %d | frames: %s' % (len(video_frames), str(frames.shape)))
     return frames, fps, decode_all_video
 
 
@@ -177,6 +201,8 @@ def decode(
     num_clips=10,
     video_meta=None,
     target_fps=30,
+    hack_center_frame=0,
+    debug=False,
 ):
     """
     Decode the video and perform temporal sampling.
@@ -211,6 +237,8 @@ def decode(
             clip_idx,
             num_clips,
             target_fps,
+            hack_center_frame=hack_center_frame,
+            debug=debug,
         )
     except Exception as e:
         print("Failed to decode with pyav with exception: {}".format(e))
@@ -220,6 +248,9 @@ def decode(
     if frames is None:
         return frames
 
+    if debug:
+        print('decoded video! %s' % str(frames.shape))
+
     start_idx, end_idx = get_start_end_idx(
         frames.shape[0],
         num_frames * sampling_rate * fps / target_fps,
@@ -227,5 +258,5 @@ def decode(
         num_clips if decode_all_video else 1,
     )
     # Perform temporal sampling from the decoded video.
-    frames = temporal_sampling(frames, start_idx, end_idx, num_frames)
+    frames = temporal_sampling(frames, start_idx, end_idx, num_frames, debug=debug)
     return frames
