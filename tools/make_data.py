@@ -24,8 +24,10 @@ def main():
         help="(glob) path to video clips")
     parser.add_argument("--data_path", type=str, default='/home/ubuntu/data/bball/edge-100/csv/*csv',
         help="(glob) path to csv of info about video clips")
-    parser.add_argument("--out_path", type=str, default='/home/ubuntu/data/bball/edge-100/all_vids.csv',
+    parser.add_argument("--out_path", type=str, default='/home/ubuntu/data/bball/edge-100/',
         help="path to output file (as CSV)")
+    parser.add_argument('--val_frac', type=float, default=0.3,
+        help='validation split?')
     args = parser.parse_args()
     print(args)
 
@@ -74,14 +76,22 @@ def main():
     SAVE_COLS = ['filepath', 'Release Frame', 'pitchType', 'Is Strike', 'speed', 'spin', 'trueSpin', 'spinEfficiency']
     merge_df = merge_df[SAVE_COLS]
 
+    # Drop data without 'Release Frame'?
+    print(merge_df['Release Frame'])
+    merge_df = merge_df[~merge_df['Release Frame'].isna()]
+
+    # Shuffle.
+    merge_df = merge_df.sample(frac=1.)
+
+    # Train/Val split
+    val_size = int(merge_df.shape[0]*args.val_frac)
+    print('Train/Val split: %d/%d' % (merge_df.shape[0]-val_size, val_size))
 
     # Save results...
     print('Saving results %s to %s' % (str(merge_df.shape), args.out_path))
-    merge_df.to_csv(args.out_path, index=False)
-
-
-
-
+    merge_df.to_csv(os.path.join(args.out_path, 'all_vids.csv'), index=False)
+    merge_df[:-val_size].to_csv(os.path.join(args.out_path, 'train.csv'), index=False)
+    merge_df[-val_size:].to_csv(os.path.join(args.out_path, 'val.csv'), index=False)
 
 if __name__ == "__main__":
     main()
