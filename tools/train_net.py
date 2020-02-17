@@ -22,7 +22,8 @@ from slowfast.utils.meters import AVAMeter, TrainMeter, ValMeter
 logger = logging.get_logger(__name__)
 
 
-def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg):
+def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
+    r_loss_weight=3.0, debug=False):
     """
     Perform the video training for one epoch.
     Args:
@@ -40,14 +41,25 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg):
     train_meter.iter_tic()
     data_size = len(train_loader)
 
-    for cur_iter, (inputs, labels, _, meta) in enumerate(train_loader):
+    for cur_iter, (inputs, labels_tuple, _, meta) in enumerate(train_loader):
         # Transfer the data to the current GPU device.
         if isinstance(inputs, (list,)):
             for i in range(len(inputs)):
                 inputs[i] = inputs[i].cuda(non_blocking=True)
         else:
             inputs = inputs.cuda(non_blocking=True)
+        # HACK -- return labels tuple -- categorical (classification), and regression values...
+        labels = labels_tuple[0]
         labels = labels.cuda()
+        labels_extra = labels_tuple[1]
+        labels_extra = [l.unsqueeze(1) for l in labels_extra]
+        labels_extra = torch.cat(labels_extra, dim=1)
+        names = labels_tuple[2]
+        if debug:
+            print(labels)
+            print(labels_extra)
+            print(labels_extra.shape)
+        labels_extra = labels_extra.cuda().float()
         for key, val in meta.items():
             if isinstance(val, (list,)):
                 for i in range(len(val)):
@@ -61,17 +73,36 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg):
 
         if cfg.DETECTION.ENABLE:
             # Compute the predictions.
-            preds = model(inputs, meta["boxes"])
+            preds_all = model(inputs, meta["boxes"])
 
         else:
             # Perform the forward pass.
-            preds = model(inputs)
+            preds_all = model(inputs)
+
+        # HACK -- Output multiple predictions.
+        if True:
+            preds, preds_extra = preds_all
+        else:
+            preds = preds_all
+            preds_extra = None
+
+        if debug:
+            print(preds, preds_extra)
+            print(names)
 
         # Explicitly declare reduction to mean.
         loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="mean")
+        # Apply "Huber loss" to regression terms -- L2 under norm 1.0, L1 otherwise (not as sensitive to outliers)
+        #loss_fun_extra = torch.nn.SmoothL1Loss()
+        loss_fun_extra = torch.nn.MSELoss()
 
         # Compute the loss.
-        loss = loss_fun(preds, labels)
+        c_loss = loss_fun(preds, labels)
+        r_loss = loss_fun_extra(preds_extra, labels_extra)
+        # Add weighting parameter to loss parts. (Ignore or over-weight regression loss r_loss)
+        r_weight = r_loss_weight
+        c_weight = 1.0
+        loss = (c_weight*c_loss + r_weight*r_loss) / (r_weight + c_weight)
 
         # check Nan Loss.
         misc.check_nan_losses(loss)
@@ -92,28 +123,39 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg):
             train_meter.update_stats(None, None, None, loss, lr)
         else:
             # Compute the errors.
-            num_topks_correct = metrics.topks_correct(preds, labels, (1, 5))
+            num_topks_correct = metrics.topks_correct(preds, labels, (1, 2))
             top1_err, top5_err = [
                 (1.0 - x / preds.size(0)) * 100.0 for x in num_topks_correct
             ]
 
+            # Count the errors, for regression [normalized, so w/r/t stdev]
+            # HACK -- average across all predictions, in all categories
+            reg_err_05 = metrics.regression_correct(preds_extra, labels_extra, eps=0.5) / preds_extra.shape[1]
+            reg_err_025 = metrics.regression_correct(preds_extra, labels_extra, eps=0.25) / preds_extra.shape[1]
+            if debug:
+                print(reg_err_05, reg_err_025)
+
             # Gather all the predictions across all the devices.
             if cfg.NUM_GPUS > 1:
-                loss, top1_err, top5_err = du.all_reduce(
-                    [loss, top1_err, top5_err]
+                loss, c_loss, r_loss, top1_err, top5_err, reg_err_05, reg_err_025 = du.all_reduce(
+                    [loss, c_loss, r_loss, top1_err, top5_err, reg_err_05, reg_err_025]
                 )
 
             # Copy the stats from GPU to CPU (sync point).
-            loss, top1_err, top5_err = (
+            loss, c_loss, r_loss, top1_err, top5_err, reg_err_05, reg_err_025 = (
                 loss.item(),
+                c_loss.item(),
+                r_loss.item(),
                 top1_err.item(),
                 top5_err.item(),
+                reg_err_05.item(),
+                reg_err_025.item(),
             )
 
             train_meter.iter_toc()
             # Update and log stats.
             train_meter.update_stats(
-                top1_err, top5_err, loss, lr, inputs[0].size(0) * cfg.NUM_GPUS
+                top1_err, top5_err, loss, c_loss, r_loss, lr, inputs[0].size(0) * cfg.NUM_GPUS, reg_err_05, reg_err_025
             )
 
         train_meter.log_iter_stats(cur_epoch, cur_iter)
@@ -125,7 +167,7 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg):
 
 
 @torch.no_grad()
-def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg):
+def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=3., debug=True):
     """
     Evaluate the model on the val set.
     Args:
@@ -141,14 +183,25 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg):
     model.eval()
     val_meter.iter_tic()
 
-    for cur_iter, (inputs, labels, _, meta) in enumerate(val_loader):
+    for cur_iter, (inputs, labels_tuple, _, meta) in enumerate(val_loader):
         # Transferthe data to the current GPU device.
         if isinstance(inputs, (list,)):
             for i in range(len(inputs)):
                 inputs[i] = inputs[i].cuda(non_blocking=True)
         else:
             inputs = inputs.cuda(non_blocking=True)
+        # HACK -- return labels tuple -- categorical (classification), and regression values...
+        labels = labels_tuple[0]
         labels = labels.cuda()
+        labels_extra = labels_tuple[1]
+        labels_extra = [l.unsqueeze(1) for l in labels_extra]
+        labels_extra = torch.cat(labels_extra, dim=1)
+        names = labels_tuple[2]
+        if debug:
+            print(labels)
+            print(labels_extra)
+            print(labels_extra.shape)
+        labels_extra = labels_extra.cuda().float()
         for key, val in meta.items():
             if isinstance(val, (list,)):
                 for i in range(len(val)):
@@ -173,25 +226,59 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg):
             # Update and log stats.
             val_meter.update_stats(preds.cpu(), ori_boxes.cpu(), metadata.cpu())
         else:
-            preds = model(inputs)
+            preds_all = model(inputs)
+            # HACK -- Output multiple predictions.
+            if True:
+                preds, preds_extra = preds_all
+            else:
+                preds = preds_all
+                preds_extra = None
+
+            if debug:
+                print(preds, preds_extra)
+                print(names)
+
+            # Save validation losses.
+            # Explicitly declare reduction to mean.
+            loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="mean")
+            # Apply "Huber loss" to regression terms -- L2 under norm 1.0, L1 otherwise (not as sensitive to outliers)
+            #loss_fun_extra = torch.nn.SmoothL1Loss()
+            loss_fun_extra = torch.nn.MSELoss()
+            c_loss = loss_fun(preds, labels)
+            r_loss = loss_fun_extra(preds_extra, labels_extra)
+            # Add weighting parameter to loss parts. (Ignore or over-weight regression loss r_loss)
+            r_weight = r_loss_weight
+            c_weight = 1.0
+            loss = (c_weight*c_loss + r_weight*r_loss) / (r_weight + c_weight)
+
+            # check Nan Loss.
+            misc.check_nan_losses(loss)
 
             # Compute the errors.
-            num_topks_correct = metrics.topks_correct(preds, labels, (1, 5))
+            num_topks_correct = metrics.topks_correct(preds, labels, (1, 2))
+
+            # Count the errors, for regression [normalized, so w/r/t stdev]
+            # HACK -- average across all predictions, in all categories
+            reg_err_05 = metrics.regression_correct(preds_extra, labels_extra, eps=0.5) / preds_extra.shape[1]
+            reg_err_025 = metrics.regression_correct(preds_extra, labels_extra, eps=0.25) / preds_extra.shape[1]
 
             # Combine the errors across the GPUs.
             top1_err, top5_err = [
                 (1.0 - x / preds.size(0)) * 100.0 for x in num_topks_correct
             ]
             if cfg.NUM_GPUS > 1:
-                top1_err, top5_err = du.all_reduce([top1_err, top5_err])
+                top1_err, top5_err, loss, c_loss, r_loss, reg_err_05, reg_err_025 = du.all_reduce([top1_err, top5_err,
+                    loss, c_loss, r_loss, reg_err_05, reg_err_025])
+
 
             # Copy the errors from GPU to CPU (sync point).
-            top1_err, top5_err = top1_err.item(), top5_err.item()
+            top1_err, top5_err, loss, c_loss, r_loss = top1_err.item(), top5_err.item(), loss.item(), c_loss.item(), r_loss.item()
+            reg_err_05, reg_err_025 = reg_err_05.item(), reg_err_025.item()
 
             val_meter.iter_toc()
             # Update and log stats.
             val_meter.update_stats(
-                top1_err, top5_err, inputs[0].size(0) * cfg.NUM_GPUS
+                top1_err, top5_err, loss, c_loss, r_loss, 0., inputs[0].size(0) * cfg.NUM_GPUS, reg_err_05, reg_err_025
             )
 
         val_meter.log_iter_stats(cur_epoch, cur_iter)
@@ -282,7 +369,9 @@ def train(cfg):
         val_meter = AVAMeter(len(val_loader), cfg, mode="val")
     else:
         train_meter = TrainMeter(len(train_loader), cfg)
-        val_meter = ValMeter(len(val_loader), cfg)
+        #val_meter = ValMeter(len(val_loader), cfg)
+        # Too lazy to add other values...
+        val_meter = TrainMeter(len(val_loader), cfg, is_val=True)
 
     # Perform the training loop.
     logger.info("Start epoch: {}".format(start_epoch + 1))

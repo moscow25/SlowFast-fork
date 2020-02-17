@@ -112,6 +112,13 @@ class Kinetics(torch.utils.data.Dataset):
                 print((path, label, center_frame))
                 # TODO: Table convert text to emum
                 label = utils.PITCH_TYPE_ENUM[label]
+
+                # Hack -- use regexp to skip hard players -- lefties?
+                # TODO: If we want to measure validation on pitcher unseen by training
+                #if path.find("McSteen_J") != -1:
+                #    print('skipping LEFTY %s' % path)
+                #    continue
+
                 for idx in range(self._num_clips):
                     self._path_to_videos.append(
                         os.path.join(self.cfg.DATA.PATH_PREFIX, path)
@@ -149,6 +156,10 @@ class Kinetics(torch.utils.data.Dataset):
                 decoded, then return the index of the video. If not, return the
                 index of the video replacement that can be decoded.
         """
+        # TODO: Data augmentation? In training only. Flip image ~1/3 of the time? To deal with lefties.
+        # TODO: Apply gaussian blurr -- to the "pitch design + text" tab?
+        # TODO: Other paranoia about visualization and accidental labels?
+
         if debug:
             print('Calling Kinetics __getitem__()')
         if self.mode in ["train", "val"]:
@@ -252,8 +263,15 @@ class Kinetics(torch.utils.data.Dataset):
             )
 
             label = self._labels[index]
+            info = self._info[index]
+            # HACK -- collect "extra information" for loss function
+            extra_labels = [info['speed_norm'], info['spin_norm'], info['trueSpin_norm'], info['spinEfficiency_norm']]
+            fname = info['filepath']
+            if debug:
+                print('extra labels -- speed, spin etc [normalized]')
+                print(extra_labels)
             frames = utils.pack_pathway_output(self.cfg, frames)
-            return frames, label, index, {}
+            return frames, (label, extra_labels, fname), index, {}
         else:
             raise RuntimeError(
                 "Failed to fetch video after {} retries.".format(

@@ -373,7 +373,7 @@ class TrainMeter(object):
     Measure training stats.
     """
 
-    def __init__(self, epoch_iters, cfg):
+    def __init__(self, epoch_iters, cfg, is_val=False):
         """
         Args:
             epoch_iters (int): the overall number of iterations of one epoch.
@@ -384,7 +384,12 @@ class TrainMeter(object):
         self.MAX_EPOCH = cfg.SOLVER.MAX_EPOCH * epoch_iters
         self.iter_timer = Timer()
         self.loss = ScalarMeter(cfg.LOG_PERIOD)
+        # Add tracking for classification and regression losses
+        self.c_loss = ScalarMeter(cfg.LOG_PERIOD)
+        self.r_loss = ScalarMeter(cfg.LOG_PERIOD)
         self.loss_total = 0.0
+        self.c_loss_total = 0.
+        self.r_loss_total = 0.
         self.lr = None
         # Current minibatch errors (smoothed over a window).
         self.mb_top1_err = ScalarMeter(cfg.LOG_PERIOD)
@@ -393,19 +398,29 @@ class TrainMeter(object):
         self.num_top1_mis = 0
         self.num_top5_mis = 0
         self.num_samples = 0
+        self.reg_err_05 = 0.
+        self.reg_err_025 = 0.
+        # Hack for display
+        self.is_val = is_val
 
     def reset(self):
         """
         Reset the Meter.
         """
         self.loss.reset()
+        self.c_loss.reset()
+        self.r_loss.reset()
         self.loss_total = 0.0
+        self.c_loss_total = 0.
+        self.r_loss_total = 0.
         self.lr = None
         self.mb_top1_err.reset()
         self.mb_top5_err.reset()
         self.num_top1_mis = 0
         self.num_top5_mis = 0
         self.num_samples = 0
+        self.reg_err_05 = 0.
+        self.reg_err_025 = 0.
 
     def iter_tic(self):
         """
@@ -419,7 +434,7 @@ class TrainMeter(object):
         """
         self.iter_timer.pause()
 
-    def update_stats(self, top1_err, top5_err, loss, lr, mb_size):
+    def update_stats(self, top1_err, top5_err, loss, c_loss, r_loss, lr, mb_size, reg_err_05, reg_err_025):
         """
         Update the current stats.
         Args:
@@ -433,11 +448,17 @@ class TrainMeter(object):
         self.mb_top1_err.add_value(top1_err)
         self.mb_top5_err.add_value(top5_err)
         self.loss.add_value(loss)
+        self.c_loss.add_value(c_loss)
+        self.r_loss.add_value(r_loss)
         self.lr = lr
         # Aggregate stats
         self.num_top1_mis += top1_err * mb_size
         self.num_top5_mis += top5_err * mb_size
         self.loss_total += loss * mb_size
+        self.c_loss_total += c_loss * mb_size
+        self.r_loss_total += r_loss * mb_size
+        self.reg_err_05 += reg_err_05 # * mb_size
+        self.reg_err_025 += reg_err_025 # * mb_size
         self.num_samples += mb_size
 
     def log_iter_stats(self, cur_epoch, cur_iter):
@@ -454,15 +475,21 @@ class TrainMeter(object):
         )
         eta = str(datetime.timedelta(seconds=int(eta_sec)))
         mem_usage = misc.gpu_mem_usage()
+        if self.is_val:
+            t = 'val_iter'
+        else:
+            t = 'train_iter'
         stats = {
-            "_type": "train_iter",
+            "_type": t,
             "epoch": "{}/{}".format(cur_epoch + 1, self._cfg.SOLVER.MAX_EPOCH),
             "iter": "{}/{}".format(cur_iter + 1, self.epoch_iters),
             "time_diff": self.iter_timer.seconds(),
             "eta": eta,
             "top1_err": self.mb_top1_err.get_win_median(),
-            "top5_err": self.mb_top5_err.get_win_median(),
+            "top2_err": self.mb_top5_err.get_win_median(),
             "loss": self.loss.get_win_median(),
+            "c_loss": self.c_loss.get_win_median(),
+            "r_loss": self.r_loss.get_win_median(),
             "lr": self.lr,
             "mem": int(np.ceil(mem_usage)),
         }
@@ -481,15 +508,27 @@ class TrainMeter(object):
         mem_usage = misc.gpu_mem_usage()
         top1_err = self.num_top1_mis / self.num_samples
         top5_err = self.num_top5_mis / self.num_samples
+        reg_err_05 = self.reg_err_05 / self.num_samples
+        reg_err_025 = self.reg_err_025 / self.num_samples
         avg_loss = self.loss_total / self.num_samples
+        avg_c_loss = self.c_loss_total / self.num_samples
+        avg_r_loss = self.r_loss_total / self.num_samples
+        if self.is_val:
+            t = 'val_epoch'
+        else:
+            t = 'train_epoch'
         stats = {
-            "_type": "train_epoch",
+            "_type": t,
             "epoch": "{}/{}".format(cur_epoch + 1, self._cfg.SOLVER.MAX_EPOCH),
             "time_diff": self.iter_timer.seconds(),
             "eta": eta,
             "top1_err": top1_err,
-            "top5_err": top5_err,
+            "top2_err": top5_err,
             "loss": avg_loss,
+            "c_loss": avg_c_loss,
+            "r_loss": avg_r_loss,
+            "r_err_05": reg_err_05,
+            "reg_err_025": reg_err_025,
             "lr": self.lr,
             "mem": int(np.ceil(mem_usage)),
         }

@@ -124,6 +124,9 @@ class FuseFastToSlow(nn.Module):
 
 # TODO: Import from common utils/data file
 NUM_PITCH_TYPES = 8
+# HACK: velo, spin, spin efficiency
+# TODO: Use common enum
+NUM_SPIN_TYPES = 4
 # TODO: Add other class types.
 class SlowFastModel(nn.Module):
     """
@@ -392,6 +395,33 @@ class SlowFastModel(nn.Module):
                 dropout_rate=cfg.MODEL.DROPOUT_RATE,
             )
 
+            # Spin rate, etc
+            self.pitch_spin_head = head_helper.ResNetBasicHead(
+                dim_in=[
+                    width_per_group * 32,
+                    width_per_group * 32 // cfg.SLOWFAST.BETA_INV,
+                ],
+                #num_classes=cfg.MODEL.NUM_CLASSES,
+                num_classes=NUM_SPIN_TYPES,
+                pool_size=[
+                    [
+                        cfg.DATA.NUM_FRAMES
+                        // cfg.SLOWFAST.ALPHA
+                        // pool_size[0][0],
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][1],
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][2],
+                    ],
+                    [
+                        cfg.DATA.NUM_FRAMES // pool_size[1][0],
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][1],
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][2],
+                    ],
+                ],
+                dropout_rate=cfg.MODEL.DROPOUT_RATE,
+                act_func="none",
+                mlp_sizes= [128, 32],
+                mlp_dropout=0.3,
+            )
 
     def forward(self, x, bboxes=None, debug=True):
         #if debug:
@@ -425,10 +455,11 @@ class SlowFastModel(nn.Module):
             #if debug:
             #    print('second output shape')
             #    print(y.shape)
+            z = self.pitch_spin_head(x)
 
         # TODO: Manage outputs -- how many heads, how is it handled -- named outputs?
         if debug:
-            return y
+            return y, z
         else:
             return x1
 

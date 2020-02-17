@@ -5,6 +5,10 @@
 
 import torch
 
+# For regression, count number within eps of true label.
+def regression_correct(preds, labels, eps=0.5):
+    delta = torch.abs(preds - labels) >= eps
+    return torch.sum(delta).float()
 
 def topks_correct(preds, labels, ks):
     """

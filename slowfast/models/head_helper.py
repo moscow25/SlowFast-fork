@@ -6,6 +6,7 @@
 import torch
 import torch.nn as nn
 from detectron2.layers import ROIAlign
+from itertools import chain
 
 
 class ResNetRoIHead(nn.Module):
@@ -146,6 +147,8 @@ class ResNetBasicHead(nn.Module):
         pool_size,
         dropout_rate=0.0,
         act_func="softmax",
+        mlp_sizes = [],
+        mlp_dropout = 0.1,
     ):
         """
         The `__init__` method of any subclass should also contain these
@@ -179,13 +182,36 @@ class ResNetBasicHead(nn.Module):
             self.dropout = nn.Dropout(dropout_rate)
         # Perform FC in a fully convolutional manner. The FC layer will be
         # initialized with a different std comparing to convolutional layers.
-        self.projection = nn.Linear(sum(dim_in), num_classes, bias=True)
+        #init_proj =
+
+        self.layer_sizes = [sum(dim_in)] + list(map(int, mlp_sizes)) + [num_classes]
+        self.nonlinearity = nn.LeakyReLU(0.2)
+        if len(self.layer_sizes) <= 2:
+            self.projection = nn.Linear(sum(dim_in), num_classes, bias=True)
+        else:
+            layer_list = []
+            #layer_list.extend([nn.Dropout(dropout_rate)])
+
+            layer_list.extend(list(chain.from_iterable(
+                [[nn.Linear(self.layer_sizes[i], self.layer_sizes[i+1]), self.nonlinearity, nn.Dropout(mlp_dropout)] for i in range(len(self.layer_sizes) - 1)]
+            )))
+            # HACK -- drop nonlinearity and dropout, for final output.
+            layer_list = layer_list[:-2]
+            print('Projection layer:')
+            print(layer_list)
+            self.projection = nn.Sequential(*layer_list)
 
         # Softmax for evaluation and testing.
+        # activation for *final* outputs [non for regression!]
         if act_func == "softmax":
             self.act = nn.Softmax(dim=4)
         elif act_func == "sigmoid":
             self.act = nn.Sigmoid()
+        elif act_func == "tanh":
+            self.act == nn.Tanh()
+        elif act_func == "none":
+            print('applying none/Identity activation for head')
+            self.act = nn.Identity()
         else:
             raise NotImplementedError(
                 "{} is not supported as an activation"
@@ -208,7 +234,8 @@ class ResNetBasicHead(nn.Module):
             x = self.dropout(x)
         x = self.projection(x)
 
-        # Performs fully convlutional inference.
+        # Performs fully convolutional inference.
+        # TODO: Why is this always called? Confusing.
         if not self.training:
             x = self.act(x)
             x = x.mean([1, 2, 3])
