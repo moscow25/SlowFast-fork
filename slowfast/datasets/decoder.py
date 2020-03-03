@@ -58,10 +58,11 @@ def get_start_end_idx(video_size, clip_size, clip_idx, num_clips, hack_center_fr
             print('HACK: requesting center around frame %s' % hack_center_frame)
         # NOTE -- if we want to get more post-release flight -- bias clip toward *after* release
         #start_idx = hack_center_frame - (clip_size / 2.)
-        start_idx = hack_center_frame - (clip_size / 4.)
+        start_idx = hack_center_frame - (clip_size / 3.)
+        #start_idx = hack_center_frame - (clip_size / 4.)
         # NOTE -- reduce jitter? TODO: run an actual experiment
-        #jitter = clip_size / 4. # Hack -- how much we jitter in time
-        jitter = clip_size / 8. # Hack -- how much we jitter in time
+        jitter = clip_size / 4. # Hack -- how much we jitter in time
+        #jitter = clip_size / 8. # Hack -- how much we jitter in time
         start_idx += jitter / 2. - random.uniform(0, jitter)
         start_idx = max(1.,start_idx)
     elif clip_idx == -1:

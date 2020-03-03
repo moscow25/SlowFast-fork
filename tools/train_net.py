@@ -21,9 +21,67 @@ from slowfast.utils.meters import AVAMeter, TrainMeter, ValMeter
 
 logger = logging.get_logger(__name__)
 
+# Simple loss function, removing discontinuity at 0-360 degrees
+# Supports scaled inputs
+def normal_degrees_loss(input, target, scale=1., offset=0., deg=360.):
+    print(input, target, scale, deg)
+    i_s, t_s = input*scale + offset, target*scale + offset
+    i_s = torch.clamp(i_s, 0., deg)
+    t_s = torch.clamp(t_s, 0., deg)
+    a = i_s - t_s
+    a = (a + 180.) % 360. - 180.
+    a = torch.abs(a) / scale
+    print(a)
+    return torch.mean(a*a)
 
+pi = 3.14159265358979323846
+def deg2rad(t):
+    return t * pi / 180.
+
+def rad2deg(r):
+    return r * 180. / pi
+
+# Input will predict "tilt" as (x,y) vector; target is in degrees.
+# A. Get both as vectors
+# B. Cosine distance
+def axis_tilt_similarity(input, target, use_tanh=False):
+    #print(input, target)
+    # Tanh -- saturates, and hard to get off the corners :-(
+    # Without tanh -- make sure to penalize large values somehow...
+    if use_tanh:
+        input = torch.tanh(input)
+    t = deg2rad(target).unsqueeze(1)
+    cos_t = torch.cos(t)
+    sin_t = torch.sin(t)
+    #print(cos_t, sin_t)
+    t = torch.cat((cos_t, sin_t), dim=1)
+    cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+    #print(input, t)
+    sim = cos(input, t)
+    #print(sim)
+    return sim
+
+# For debugging, return degrees and clock from (x,y) as above
+def tilt_from_xy(in_t, use_tanh=False):
+    if use_tanh:
+        in_t = torch.tanh(in_t)
+    print(in_t)
+    s = torch.sum((in_t * in_t), dim=1)
+    print(s)
+    in_t = in_t / s.unsqueeze(1)
+    rad = torch.atan2(in_t[:,1], in_t[:,0])
+    return rad2deg(rad)
+
+# Unit norm -- penalize large values
+def circle_unit_norm(in_t):
+    s = torch.sum((in_t * in_t), dim=1)
+    d = torch.ones_like(s)-s
+    return torch.mean(d*d)
+
+DEGREES_DIV_FACTOR = 90.
+DEGREES_SUB_FACTOR = 2.
 def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
-    r_loss_weight=3.0, debug=False):
+    r_loss_weight=5.0, debug=False):
     """
     Perform the video training for one epoch.
     Args:
@@ -41,6 +99,8 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
     train_meter.iter_tic()
     data_size = len(train_loader)
 
+    # Hack -- save details and biggest errors
+    outputs = []
     for cur_iter, (inputs, labels_tuple, _, meta) in enumerate(train_loader):
         # Transfer the data to the current GPU device.
         if isinstance(inputs, (list,)):
@@ -54,7 +114,22 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
         labels_extra = labels_tuple[1]
         labels_extra = [l.unsqueeze(1) for l in labels_extra]
         labels_extra = torch.cat(labels_extra, dim=1)
+        # HACK transform final column -- axis in degrees 0-360 --
+        #labels_extra[:,-1] /= DEGREES_DIV_FACTOR
+        #labels_extra[:,-1] -= DEGREES_SUB_FACTOR
         names = labels_tuple[2]
+
+        # saving data for saving validation
+        if debug:
+            names = np.concatenate((np.expand_dims(labels_tuple[2][0], axis=1),
+                np.expand_dims(labels_tuple[2][1], axis=1),
+                np.expand_dims(labels_tuple[2][2].numpy(), axis=1)), axis=1)
+            print(names.shape, np.expand_dims(labels_tuple[0].numpy(), axis=1).shape,
+                labels_tuple[1][0].numpy().shape, labels_tuple[1][1].numpy().shape)
+            val_outs = np.concatenate((names, np.expand_dims(labels_tuple[0].numpy(), axis=1),
+                labels_extra.numpy()), axis=1)
+            print(val_outs)
+
         if debug:
             print(labels)
             print(labels_extra)
@@ -87,22 +162,56 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
             preds_extra = None
 
         if debug:
-            print(preds, preds_extra)
+            print(preds)
+            print(preds_extra)
+            print(tilt_from_xy(preds_extra[:,-2:]))
             print(names)
 
         # Explicitly declare reduction to mean.
-        loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="mean")
+        loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction='none')#(reduction="mean")
         # Apply "Huber loss" to regression terms -- L2 under norm 1.0, L1 otherwise (not as sensitive to outliers)
         #loss_fun_extra = torch.nn.SmoothL1Loss()
-        loss_fun_extra = torch.nn.MSELoss()
+        loss_fun_extra = torch.nn.MSELoss(reduction='none')
+        loss_fun_degrees = normal_degrees_loss
 
         # Compute the loss.
         c_loss = loss_fun(preds, labels)
-        r_loss = loss_fun_extra(preds_extra, labels_extra)
+        #r_loss = loss_fun_extra(preds_extra, labels_extra)
+        # HACK -- "normal" regression loss, except the last two columns ([x,y] for spin axis)
+        r_loss = loss_fun_extra(preds_extra[:,:-2], labels_extra[:,:-1])
+        w_loss = torch.mean((c_loss.unsqueeze(1) + r_loss*r_loss_weight)/(1.0+r_loss_weight), dim=1)
+
+        if debug:
+            print(r_loss)
+            print(c_loss)
+            print('losses')
+            print(w_loss)
+            #print(val_outs.shape, preds.shape, preds_extra.shape, w_loss.shape)
+            val_outs = np.concatenate((val_outs, preds.detach().cpu().numpy(),
+                preds_extra.detach().cpu().numpy(),
+                c_loss.unsqueeze(1).detach().cpu().numpy(),
+                torch.mean(r_loss, dim=1).unsqueeze(1).detach().cpu().numpy(),
+                w_loss.unsqueeze(1).detach().cpu().numpy()), axis=1)
+            outputs.append(val_outs)
+        # Manual reduce
+        c_loss = torch.mean(c_loss)
+        r_loss = torch.mean(r_loss)
+
+        axis_loss = (1.0 - axis_tilt_similarity(preds_extra[:,-2:], labels_extra[:,-1]))
+        # TODO -- Square the cosine similarity loss for axis?
+        # TODO -- in debug mode, display degrees from x,y pedictions... harder to read otherwise.
+        axis_loss = torch.mean(axis_loss)
+        r_loss = (r_loss * (preds_extra.shape[1]-2) + axis_loss*2)/preds_extra.shape[1]
+
+        # HACK -- a kind of "weight norm" on coordinates prediction
+        w_loss = circle_unit_norm(preds_extra[:,-2:]) * 0.001
+
+        #r_loss += loss_fun_degrees(preds_extra[:,-1], labels_extra[:,-1],
+        #    scale=DEGREES_DIV_FACTOR, offset=DEGREES_SUB_FACTOR*DEGREES_DIV_FACTOR)
         # Add weighting parameter to loss parts. (Ignore or over-weight regression loss r_loss)
         r_weight = r_loss_weight
         c_weight = 1.0
-        loss = (c_weight*c_loss + r_weight*r_loss) / (r_weight + c_weight)
+        loss = (c_weight*c_loss + r_weight*r_loss) / (r_weight + c_weight) + w_loss
 
         # check Nan Loss.
         misc.check_nan_losses(loss)
@@ -130,9 +239,10 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
 
             # Count the errors, for regression [normalized, so w/r/t stdev]
             # HACK -- average across all predictions, in all categories
-            reg_err_05 = metrics.regression_correct(preds_extra, labels_extra, eps=0.5) / preds_extra.shape[1]
-            reg_err_025 = metrics.regression_correct(preds_extra, labels_extra, eps=0.25) / preds_extra.shape[1]
+            reg_err_05 = metrics.regression_correct(preds_extra[:,:-2], labels_extra[:,:-1], eps=0.5) / preds_extra.shape[1]
+            reg_err_025 = metrics.regression_correct(preds_extra[:,:-2], labels_extra[:,:-1], eps=0.25) / preds_extra.shape[1]
             if debug:
+                print('0.5 and 0.25 regression error rates:')
                 print(reg_err_05, reg_err_025)
 
             # Gather all the predictions across all the devices.
@@ -161,13 +271,25 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
         train_meter.log_iter_stats(cur_epoch, cur_iter)
         train_meter.iter_tic()
 
+    if debug:
+        outputs = np.concatenate(outputs, axis=0)
+        def last(n): return n[-1]
+        outputs = outputs[outputs[:,-1].argsort()]
+        print(outputs)
+        print(outputs.shape)
+
+        for k in outputs[-10:, :].tolist():
+            print(k)
+
     # Log epoch stats.
     train_meter.log_epoch_stats(cur_epoch)
     train_meter.reset()
 
+    #assert False
+
 
 @torch.no_grad()
-def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=3., debug=True):
+def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., debug=True):
     """
     Evaluate the model on the val set.
     Args:
@@ -183,6 +305,8 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=3., d
     model.eval()
     val_meter.iter_tic()
 
+    # Hack -- save details and biggest errors
+    outputs = []
     for cur_iter, (inputs, labels_tuple, _, meta) in enumerate(val_loader):
         # Transferthe data to the current GPU device.
         if isinstance(inputs, (list,)):
@@ -197,10 +321,22 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=3., d
         labels_extra = [l.unsqueeze(1) for l in labels_extra]
         labels_extra = torch.cat(labels_extra, dim=1)
         names = labels_tuple[2]
+
+        # saving data for saving validation
         if debug:
-            print(labels)
-            print(labels_extra)
-            print(labels_extra.shape)
+            names = np.concatenate((np.expand_dims(labels_tuple[2][0], axis=1),
+                np.expand_dims(labels_tuple[2][1], axis=1),
+                np.expand_dims(labels_tuple[2][2].numpy(), axis=1)), axis=1)
+            #print(names.shape, np.expand_dims(labels_tuple[0].numpy(), axis=1).shape,
+            #    labels_tuple[1][0].numpy().shape, labels_tuple[1][1].numpy().shape)
+            val_outs = np.concatenate((names, np.expand_dims(labels_tuple[0].numpy(), axis=1),
+                labels_extra.numpy()), axis=1)
+            #print(val_outs)
+
+        #if debug:
+        #    print(labels)
+        #    print(labels_extra)
+        #    print(labels_extra.shape)
         labels_extra = labels_extra.cuda().float()
         for key, val in meta.items():
             if isinstance(val, (list,)):
@@ -234,18 +370,43 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=3., d
                 preds = preds_all
                 preds_extra = None
 
-            if debug:
-                print(preds, preds_extra)
-                print(names)
+            #if debug:
+            #    print(preds, preds_extra)
+            #    print(names)
 
             # Save validation losses.
             # Explicitly declare reduction to mean.
-            loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="mean")
+            loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="none")#(reduction="mean")
             # Apply "Huber loss" to regression terms -- L2 under norm 1.0, L1 otherwise (not as sensitive to outliers)
             #loss_fun_extra = torch.nn.SmoothL1Loss()
-            loss_fun_extra = torch.nn.MSELoss()
+            loss_fun_extra = torch.nn.MSELoss(reduction="none")
             c_loss = loss_fun(preds, labels)
-            r_loss = loss_fun_extra(preds_extra, labels_extra)
+            #r_loss = loss_fun_extra(preds_extra, labels_extra)
+            # HACK -- "normal" regression loss, except the last two columns ([x,y] for spin axis)
+            r_loss = loss_fun_extra(preds_extra[:,:-2], labels_extra[:,:-1])
+            w_loss = torch.mean((c_loss.unsqueeze(1) + r_loss*r_loss_weight)/(1.0+r_loss_weight), dim=1)
+
+            if debug:
+                #print(r_loss)
+                #print(c_loss)
+
+                #print('losses')
+                #print(w_loss)
+                #print(val_outs.shape, preds.shape, preds_extra.shape, w_loss.shape)
+                val_outs = np.concatenate((val_outs, preds.detach().cpu().numpy(),
+                    preds_extra.detach().cpu().numpy(),
+                    c_loss.unsqueeze(1).detach().cpu().numpy(),
+                    torch.mean(r_loss, dim=1).unsqueeze(1).detach().cpu().numpy(),
+                    w_loss.unsqueeze(1).detach().cpu().numpy()), axis=1)
+                outputs.append(val_outs)
+            # Reduce manually
+            c_loss = torch.mean(c_loss)
+            r_loss = torch.mean(r_loss)
+
+            axis_loss = (1.0 - axis_tilt_similarity(preds_extra[:,-2:], labels_extra[:,-1]))
+            axis_loss = torch.mean(axis_loss)
+            r_loss = (r_loss * (preds_extra.shape[1]-2) + axis_loss*2)/preds_extra.shape[1]
+
             # Add weighting parameter to loss parts. (Ignore or over-weight regression loss r_loss)
             r_weight = r_loss_weight
             c_weight = 1.0
@@ -259,8 +420,8 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=3., d
 
             # Count the errors, for regression [normalized, so w/r/t stdev]
             # HACK -- average across all predictions, in all categories
-            reg_err_05 = metrics.regression_correct(preds_extra, labels_extra, eps=0.5) / preds_extra.shape[1]
-            reg_err_025 = metrics.regression_correct(preds_extra, labels_extra, eps=0.25) / preds_extra.shape[1]
+            reg_err_05 = metrics.regression_correct(preds_extra[:,:-2], labels_extra[:,:-1], eps=0.5) / preds_extra.shape[1]
+            reg_err_025 = metrics.regression_correct(preds_extra[:,:-2], labels_extra[:,:-1], eps=0.25) / preds_extra.shape[1]
 
             # Combine the errors across the GPUs.
             top1_err, top5_err = [
@@ -283,6 +444,15 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=3., d
 
         val_meter.log_iter_stats(cur_epoch, cur_iter)
         val_meter.iter_tic()
+
+    if debug:
+        outputs = np.concatenate(outputs, axis=0)
+        def last(n): return n[-1]
+        outputs = outputs[outputs[:,-1].argsort()]
+        print(outputs)
+        print(outputs.shape)
+        for k in outputs[-20:, :].tolist():
+            print(k)
 
     # Log epoch stats.
     val_meter.log_epoch_stats(cur_epoch)

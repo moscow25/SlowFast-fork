@@ -35,7 +35,7 @@ def main():
         help="(glob) path to csv of info about video clips")
     parser.add_argument("--out_path", type=str, default='/home/ubuntu/open_source/SlowFast-fork/data/edge-100/',
         help="path to output file (as CSV)")
-    parser.add_argument('--val_frac', type=float, default=0.3,
+    parser.add_argument('--val_frac', type=float, default=0.2,
         help='validation split?')
     args = parser.parse_args()
     print(args)
@@ -83,7 +83,7 @@ def main():
 
     # Extract columns of interest
     SAVE_COLS = ['filepath', 'Release Frame', 'pitchType', 'Is Strike', 'speed', 'spin', 'trueSpin', 'spinEfficiency',
-        'Top Spin', 'Side Spin', 'Rifle Spin', 'spinAxis', 'vb','hb', 'Release Angle']
+        'Top Spin', 'Side Spin', 'Rifle Spin', 'spinAxis', 'vb','hb', 'Horizontal Angle', 'Release Angle']
     # TODO: Store the bro's name -- for eval purposes
     # TODO: Who's a lefty? Also -- flip images in training...
     merge_df = merge_df[SAVE_COLS]
@@ -99,7 +99,8 @@ def main():
     print(merge_df[['pitchType', 'speed', 'spin', 'vb','hb', 'spinAxis', 'spinAxisDeg']])
 
     # Normalize stats for regression. [Save norm values so we can rebuild projects]
-    cols_to_normalize = ['speed', 'spin', 'trueSpin', 'spinEfficiency', 'Top Spin', 'Side Spin', 'Rifle Spin', 'vb','hb', 'Release Angle']
+    cols_to_normalize = ['speed', 'spin', 'trueSpin', 'spinEfficiency',
+        'Top Spin', 'Side Spin', 'Rifle Spin', 'vb','hb', 'Horizontal Angle', 'Release Angle']
     norm_inputs = merge_df[cols_to_normalize].values
 
     print('Normalizing values for regression...')
@@ -124,7 +125,8 @@ def main():
     merge_df['rifleSpin_norm'] = norm_out[:,6]
     merge_df['vb_norm'] = norm_out[:,7]
     merge_df['hb_norm'] = norm_out[:,8]
-    merge_df['releaseAngle_norm'] = norm_out[:,9]
+    merge_df['hAngle_norm'] = norm_out[:,9]
+    merge_df['rAngle_norm'] = norm_out[:,10]
     print(merge_df.keys())
     print(merge_df.head())
 

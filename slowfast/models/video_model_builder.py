@@ -126,7 +126,8 @@ class FuseFastToSlow(nn.Module):
 NUM_PITCH_TYPES = 8
 # HACK: velo, spin, spin efficiency
 # TODO: Use common enum
-NUM_SPIN_TYPES = 4
+# NUM_SPIN_TYPES = 4
+NUM_SPIN_TYPES = 13 # 10 # 11
 # TODO: Add other class types.
 class SlowFastModel(nn.Module):
     """
@@ -393,6 +394,7 @@ class SlowFastModel(nn.Module):
                     ],
                 ],
                 dropout_rate=cfg.MODEL.DROPOUT_RATE,
+                act_func="none",
             )
 
             # Spin rate, etc
@@ -419,8 +421,8 @@ class SlowFastModel(nn.Module):
                 ],
                 dropout_rate=cfg.MODEL.DROPOUT_RATE,
                 act_func="none",
-                mlp_sizes= [128, 32],
-                mlp_dropout=0.3,
+                mlp_sizes= [256, 32],
+                mlp_dropout=0.1,
             )
 
     def forward(self, x, bboxes=None, debug=True):

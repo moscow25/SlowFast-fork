@@ -265,8 +265,13 @@ class Kinetics(torch.utils.data.Dataset):
             label = self._labels[index]
             info = self._info[index]
             # HACK -- collect "extra information" for loss function
-            extra_labels = [info['speed_norm'], info['spin_norm'], info['trueSpin_norm'], info['spinEfficiency_norm']]
-            fname = info['filepath']
+            # NOTE -- make sure to include spinAxisDegrees last! Because we use custom loss for that...
+            extra_label_cols = ['speed_norm', 'spin_norm', 'trueSpin_norm', 'spinEfficiency_norm',
+                'topSpin_norm', 'sideSpin_norm', 'rifleSpin_norm',
+                'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm', 'spinAxisDeg']
+            extra_labels = [info[c] for c in extra_label_cols]
+            name_cols = ['filepath', 'spinAxis', 'spinAxisDeg']
+            fname = [info[c] for c in name_cols]
             if debug:
                 print('extra labels -- speed, spin etc [normalized]')
                 print(extra_labels)
