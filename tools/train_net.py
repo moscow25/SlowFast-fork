@@ -4,6 +4,8 @@
 """Train a video classification model."""
 
 import numpy as np
+import tempfile
+import pandas as pd
 import pprint
 import torch
 from fvcore.nn.precise_bn import get_bn_modules, update_bn_stats
@@ -307,6 +309,19 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., d
 
     # Hack -- save details and biggest errors
     outputs = []
+    output_header = ['filepath', 'spinAxis', 'spinAxisDeg', 'pitchType',
+        'speed_norm', 'spin_norm', 'trueSpin_norm',
+        'spinEfficiency_norm', 'topSpin_norm', 'sideSpin_norm',
+        'rifleSpin_norm', 'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm',
+        'spinAxisDeg_copy',
+        'pitchType0_logit', 'pitchType1_logit', 'pitchType2_logit', 'pitchType3_logit',
+        'pitchType4_logit', 'pitchType5_logit', 'pitchType6_logit', 'pitchType7_logit',
+        'speed_norm_pred', 'spin_norm_pred', 'trueSpin_norm_pred',
+        'spinEfficiency_norm_pred', 'topSpin_norm_pred', 'sideSpin_norm_pred',
+        'rifleSpin_norm_pred', 'vb_norm_pred', 'hb_norm_pred', 'hAngle_norm_pred', 'rAngle_norm_pred',
+        'spinAxis_X_pred', 'spinAxis_Y_pred',
+        'c_loss', 'r_loss', 'total_loss']
+
     for cur_iter, (inputs, labels_tuple, _, meta) in enumerate(val_loader):
         # Transferthe data to the current GPU device.
         if isinstance(inputs, (list,)):
@@ -454,6 +469,12 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., d
         for k in outputs[-20:, :].tolist():
             print(k)
 
+        # Save data to local path.
+        df = pd.DataFrame(data=outputs, columns=output_header)
+        val_df_path = './val_epoch_%s_%s.csv' % (cur_epoch, next(tempfile._get_candidate_names()))
+        print('Saving %s val examples to %s' % (str(df.shape), val_df_path))
+        df.to_csv(val_df_path, index=False)
+
     # Log epoch stats.
     val_meter.log_epoch_stats(cur_epoch)
     val_meter.reset()
@@ -549,6 +570,7 @@ def train(cfg):
     for cur_epoch in range(start_epoch, cfg.SOLVER.MAX_EPOCH):
         # Shuffle the dataset.
         loader.shuffle_dataset(train_loader, cur_epoch)
+
         # Train for one epoch.
         train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg)
 
@@ -561,6 +583,7 @@ def train(cfg):
         # Save a checkpoint.
         if cu.is_checkpoint_epoch(cur_epoch, cfg.TRAIN.CHECKPOINT_PERIOD):
             cu.save_checkpoint(cfg.OUTPUT_DIR, model, optimizer, cur_epoch, cfg)
+
         # Evaluate the model on validation set.
         if misc.is_eval_epoch(cfg, cur_epoch):
             eval_epoch(val_loader, model, val_meter, cur_epoch, cfg)
