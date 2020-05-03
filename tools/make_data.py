@@ -82,10 +82,12 @@ def main():
     print(missing_vids)
 
     # Extract columns of interest
-    SAVE_COLS = ['filepath', 'Release Frame', 'pitchType', 'Is Strike', 'speed', 'spin', 'trueSpin', 'spinEfficiency',
-        'Top Spin', 'Side Spin', 'Rifle Spin', 'spinAxis', 'vb','hb', 'Horizontal Angle', 'Release Angle']
+    SAVE_COLS = ['filepath', 'fullName', 'ReleaseFrame', 'pitchType', 'Is Strike', 'speed', 'spin', 'trueSpin', 'spinEfficiency',
+        'Top Spin', 'Side Spin', 'Rifle Spin', 'spinAxis', 'vb','hb', 'Horizontal Angle', 'Release Angle',
+        'arm_angle', 'arm_angle_class']
     # TODO: Store the bro's name -- for eval purposes
     # TODO: Who's a lefty? Also -- flip images in training...
+    #print(merge_df.keys())
     merge_df = merge_df[SAVE_COLS]
 
     #print(merge_df.head())
@@ -100,7 +102,7 @@ def main():
 
     # Normalize stats for regression. [Save norm values so we can rebuild projects]
     cols_to_normalize = ['speed', 'spin', 'trueSpin', 'spinEfficiency',
-        'Top Spin', 'Side Spin', 'Rifle Spin', 'vb','hb', 'Horizontal Angle', 'Release Angle']
+        'Top Spin', 'Side Spin', 'Rifle Spin', 'vb','hb', 'Horizontal Angle', 'Release Angle', 'arm_angle']
     norm_inputs = merge_df[cols_to_normalize].values
 
     print('Normalizing values for regression...')
@@ -127,13 +129,14 @@ def main():
     merge_df['hb_norm'] = norm_out[:,8]
     merge_df['hAngle_norm'] = norm_out[:,9]
     merge_df['rAngle_norm'] = norm_out[:,10]
+    merge_df['armAngle_norm'] = norm_out[:,11]
     print(merge_df.keys())
     print(merge_df.head())
 
     # Drop data without 'Release Frame'?
     #print(merge_df['Release Frame'])
     vids_count = merge_df.shape[0]
-    merge_df = merge_df[~merge_df['Release Frame'].isna()]
+    merge_df = merge_df[~merge_df['ReleaseFrame'].isna()]
     print('Kept %d/%d vids with Release Frame data.' % (merge_df.shape[0], vids_count))
 
     # Shuffle.
