@@ -100,16 +100,18 @@ class Kinetics(torch.utils.data.Dataset):
             print('Reading file %s' % path_to_file)
             #for clip_idx, path_label in enumerate(f.read().splitlines()):
             for clip_idx, data in df.iterrows():
-                print('------------------------')
+                if debug:
+                    print('------------------------')
                 # Useful, but too much display
                 if debug:
                     print(clip_idx, data)
                 #assert len(path_label.split()) == 2
                 #path, label = path_label.split()
                 #path, label = path_label.split()[:2]
-                path, label, center_frame = data['filepath'], data['pitchType'], data['Release Frame']
-                print('Clip %d' % clip_idx)
-                print((path, label, center_frame))
+                path, label, center_frame = data['filepath'], data['pitchType'], data['ReleaseFrame']
+                if debug:
+                    print('Clip %d' % clip_idx)
+                    print((path, label, center_frame))
                 # TODO: Table convert text to emum
                 label = utils.PITCH_TYPE_ENUM[label]
 
@@ -254,13 +256,18 @@ class Kinetics(torch.utils.data.Dataset):
             # T H W C -> C T H W.
             frames = frames.permute(3, 0, 1, 2)
             # Perform data augmentation.
+            if debug:
+                print('Shape into spatial sampling: %s' % str(frames.shape))
             frames = self.spatial_sampling(
                 frames,
                 spatial_idx=spatial_sample_index,
                 min_scale=min_scale,
                 max_scale=max_scale,
                 crop_size=crop_size,
+                debug=debug,
             )
+            if debug:
+                print('Shape after spatial sampling: %s' % str(frames.shape))
 
             label = self._labels[index]
             info = self._info[index]
@@ -268,7 +275,7 @@ class Kinetics(torch.utils.data.Dataset):
             # NOTE -- make sure to include spinAxisDegrees last! Because we use custom loss for that...
             extra_label_cols = ['speed_norm', 'spin_norm', 'trueSpin_norm', 'spinEfficiency_norm',
                 'topSpin_norm', 'sideSpin_norm', 'rifleSpin_norm',
-                'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm', 'spinAxisDeg']
+                'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm', 'armAngle_norm', 'spinAxisDeg']
             extra_labels = [info[c] for c in extra_label_cols]
             name_cols = ['filepath', 'spinAxis', 'spinAxisDeg']
             fname = [info[c] for c in name_cols]
@@ -298,6 +305,7 @@ class Kinetics(torch.utils.data.Dataset):
         min_scale=256,
         max_scale=320,
         crop_size=224,
+        debug=False,
     ):
         """
         Perform spatial sampling on the given video frames. If spatial_idx is
@@ -318,6 +326,9 @@ class Kinetics(torch.utils.data.Dataset):
         Returns:
             frames (tensor): spatially sampled frames.
         """
+        if debug:
+            print('[frames.shape, spatial_idx, min_scale, max_scale, crop_size]')
+            print([frames.shape, spatial_idx, min_scale, max_scale, crop_size])
         assert spatial_idx in [-1, 0, 1, 2]
         if spatial_idx == -1:
             frames, _ = transform.random_short_side_scale_jitter(

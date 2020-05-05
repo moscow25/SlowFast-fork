@@ -127,7 +127,9 @@ NUM_PITCH_TYPES = 8
 # HACK: velo, spin, spin efficiency
 # TODO: Use common enum
 # NUM_SPIN_TYPES = 4
-NUM_SPIN_TYPES = 13 # 10 # 11
+NUM_SPIN_TYPES = 14 # 13 # 10 # 11
+# Types of arm slots -- also enum
+NUM_SLOT_ANGLES = 4
 # TODO: Add other class types.
 class SlowFastModel(nn.Module):
     """

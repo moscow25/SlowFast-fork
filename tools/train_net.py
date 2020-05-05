@@ -291,7 +291,7 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
 
 
 @torch.no_grad()
-def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., debug=True):
+def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., debug=False):
     """
     Evaluate the model on the val set.
     Args:

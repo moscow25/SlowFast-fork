@@ -236,7 +236,9 @@ class ResNetBasicHead(nn.Module):
 
         # Performs fully convolutional inference.
         # TODO: Why is this always called? Confusing.
+        # TODO -- should only be used in *test* not validation. Report bug.
         if not self.training:
+            # HACK: Try actually applying the activation function? Will be softmax, most likely.
             x = self.act(x)
             x = x.mean([1, 2, 3])
 
