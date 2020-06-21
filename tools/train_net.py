@@ -291,7 +291,7 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
 
 
 @torch.no_grad()
-def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., debug=False):
+def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., debug=True):
     """
     Evaluate the model on the val set.
     Args:
@@ -312,13 +312,13 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., d
     output_header = ['filepath', 'spinAxis', 'spinAxisDeg', 'pitchType',
         'speed_norm', 'spin_norm', 'trueSpin_norm',
         'spinEfficiency_norm', 'topSpin_norm', 'sideSpin_norm',
-        'rifleSpin_norm', 'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm',
+        'rifleSpin_norm', 'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm', 'armAngle_norm',
         'spinAxisDeg_copy',
         'pitchType0_logit', 'pitchType1_logit', 'pitchType2_logit', 'pitchType3_logit',
         'pitchType4_logit', 'pitchType5_logit', 'pitchType6_logit', 'pitchType7_logit',
         'speed_norm_pred', 'spin_norm_pred', 'trueSpin_norm_pred',
         'spinEfficiency_norm_pred', 'topSpin_norm_pred', 'sideSpin_norm_pred',
-        'rifleSpin_norm_pred', 'vb_norm_pred', 'hb_norm_pred', 'hAngle_norm_pred', 'rAngle_norm_pred',
+        'rifleSpin_norm_pred', 'vb_norm_pred', 'hb_norm_pred', 'hAngle_norm_pred', 'rAngle_norm_pred', 'armAngle_norm_pred',
         'spinAxis_X_pred', 'spinAxis_Y_pred',
         'c_loss', 'r_loss', 'total_loss']
 
