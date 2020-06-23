@@ -27,11 +27,22 @@ def degrees_from_clock(clock):
     d =  360. * t / (12 * 60.)
     return d
 
+# adjust image scale
+XSCALE_BIG = 900.
+XSCALE_ADJ = 320.
+YSCALE_BIG = 700.
+YSCALE_ADJ = 256.
+def adjust_scale(x, in_scale, out_scale, is_x=False):
+    # NOTE: input scale has (0,0) as TOP LEFT. Not sure that's how other scale does it...
+    # we *assume* this is the case for FMPEG also.
+    z = x * (out_scale/in_scale)
+    return z
+
 def main():
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("--vid_path", type=str, default='/home/ubuntu/data/bball/edge-100/clips/*mp4',
         help="(glob) path to video clips")
-    parser.add_argument("--data_path", type=str, default='/home/ubuntu/data/bball/edge-100/csv/*csv',
+    parser.add_argument("--data_path", type=str, default='/home/ubuntu/data/bball/edge-100/csv/all_dfv3_hand.csv',
         help="(glob) path to csv of info about video clips")
     parser.add_argument("--out_path", type=str, default='/home/ubuntu/open_source/SlowFast-fork/data/edge-100/',
         help="path to output file (as CSV)")
@@ -84,10 +95,12 @@ def main():
     # Extract columns of interest
     SAVE_COLS = ['filepath', 'fullName', 'ReleaseFrame', 'pitchType', 'Is Strike', 'speed', 'spin', 'trueSpin', 'spinEfficiency',
         'Top Spin', 'Side Spin', 'Rifle Spin', 'spinAxis', 'vb','hb', 'Horizontal Angle', 'Release Angle',
-        'arm_angle', 'arm_angle_class']
+        'arm_angle', 'arm_angle_class', 'Handedness', 'x1_new', 'y1_new', 'x2_new', 'y2_new']
     # TODO: Store the bro's name -- for eval purposes
     # TODO: Who's a lefty? Also -- flip images in training...
-    #print(merge_df.keys())
+    print(merge_df.keys())
+    #assert(False)
+
     merge_df = merge_df[SAVE_COLS]
 
     #print(merge_df.head())
@@ -97,12 +110,15 @@ def main():
     # SpinAxis is special -- 1) translate from "11:30" to degrees 0-360 2) custom loss to handle discontinuity at 0
     merge_df['spinAxisDeg'] = merge_df['spinAxis'].apply(lambda x: degrees_from_clock(x))
 
+    # Handedness -- "is lefty"
+    merge_df['isLefty'] = merge_df['Handedness'].apply(lambda x: 1.0 if x.upper() == 'L' else 0.)
+
     # Debug -- notice the patterns in pitch type, spin axis and break... guys are pretty consistent about this.
-    print(merge_df[['pitchType', 'speed', 'spin', 'vb','hb', 'spinAxis', 'spinAxisDeg']])
+    print(merge_df[['pitchType', 'speed', 'spin', 'vb','hb', 'spinAxis', 'spinAxisDeg', 'isLefty']])
 
     # Normalize stats for regression. [Save norm values so we can rebuild projects]
     cols_to_normalize = ['speed', 'spin', 'trueSpin', 'spinEfficiency',
-        'Top Spin', 'Side Spin', 'Rifle Spin', 'vb','hb', 'Horizontal Angle', 'Release Angle', 'arm_angle']
+        'Top Spin', 'Side Spin', 'Rifle Spin', 'vb','hb', 'Horizontal Angle', 'Release Angle', 'arm_angle', 'isLefty']
     norm_inputs = merge_df[cols_to_normalize].values
 
     print('Normalizing values for regression...')
@@ -114,7 +130,7 @@ def main():
     scaler.fit(norm_inputs)
     norm_out = scaler.transform(norm_inputs)
     print(norm_out.shape)
-    print(norm_out[:10])
+    print(norm_out[:])
     print("scale, mean and var for %d features" % len(scaler.scale_))
     print(cols_to_normalize)
     print((scaler.scale_, scaler.mean_, scaler.var_))
@@ -130,8 +146,15 @@ def main():
     merge_df['hAngle_norm'] = norm_out[:,9]
     merge_df['rAngle_norm'] = norm_out[:,10]
     merge_df['armAngle_norm'] = norm_out[:,11]
+    merge_df['isLefty_norm'] = norm_out[:,12]
     print(merge_df.keys())
     print(merge_df.head())
+
+    # For X1..Y2 -- bounding box on the detected ball -- translate from 900x700 coordinates (top left 0,0) to 320x256 coordinates
+    merge_df['x1_adj'] = merge_df['x1_new'].apply(lambda x: adjust_scale(x, in_scale=XSCALE_BIG, out_scale=XSCALE_ADJ, is_x=True))
+    merge_df['x2_adj'] = merge_df['x2_new'].apply(lambda x: adjust_scale(x, in_scale=XSCALE_BIG, out_scale=XSCALE_ADJ, is_x=True))
+    merge_df['y1_adj'] = merge_df['y1_new'].apply(lambda x: adjust_scale(x, in_scale=YSCALE_BIG, out_scale=YSCALE_ADJ, is_x=False))
+    merge_df['y2_adj'] = merge_df['y2_new'].apply(lambda x: adjust_scale(x, in_scale=YSCALE_BIG, out_scale=YSCALE_ADJ, is_x=False))
 
     # Drop data without 'Release Frame'?
     #print(merge_df['Release Frame'])

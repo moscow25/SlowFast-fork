@@ -148,6 +148,7 @@ class ResNetBasicHead(nn.Module):
         dropout_rate=0.0,
         act_func="softmax",
         mlp_sizes = [],
+        softmax_outputs = [],
         mlp_dropout = 0.1,
     ):
         """
@@ -186,6 +187,7 @@ class ResNetBasicHead(nn.Module):
 
         self.layer_sizes = [sum(dim_in)] + list(map(int, mlp_sizes)) + [num_classes]
         self.nonlinearity = nn.LeakyReLU(0.2)
+        self.has_final_layers = False
         if len(self.layer_sizes) <= 2:
             self.projection = nn.Linear(sum(dim_in), num_classes, bias=True)
         else:
@@ -196,10 +198,27 @@ class ResNetBasicHead(nn.Module):
                 [[nn.Linear(self.layer_sizes[i], self.layer_sizes[i+1]), self.nonlinearity, nn.Dropout(mlp_dropout)] for i in range(len(self.layer_sizes) - 1)]
             )))
             # HACK -- drop nonlinearity and dropout, for final output.
-            layer_list = layer_list[:-2]
-            print('Projection layer:')
-            print(layer_list)
-            self.projection = nn.Sequential(*layer_list)
+            if len(softmax_outputs) == 0:
+                layer_list = layer_list[:-2]
+                print('Projection layer:')
+                print(layer_list)
+                self.projection = nn.Sequential(*layer_list)
+                self.has_final_layers = False
+            else:
+                # HACK -- separate out at final layer... produce several outputs
+                layer_list = layer_list[:-3]
+                print('Projection layer:')
+                print(layer_list)
+                self.projection = nn.Sequential(*layer_list)
+
+                # create multiple final layers...
+                final_layers = [num_classes] + softmax_outputs
+                fl = []
+                for s in final_layers:
+                    l = nn.Linear(self.layer_sizes[-2],s)
+                    fl.append(l)
+                self.has_final_layers = True
+                self.final_layers = nn.ModuleList(fl)
 
         # Softmax for evaluation and testing.
         # activation for *final* outputs [non for regression!]
@@ -234,13 +253,24 @@ class ResNetBasicHead(nn.Module):
             x = self.dropout(x)
         x = self.projection(x)
 
+        if self.has_final_layers:
+            xl = []
+            for l in self.final_layers:
+                xf = l(x)
+                xf = xf.view(xf.shape[0], -1)
+                xl.append(xf)
+        else:
+            x = x.view(x.shape[0], -1)
+            xl = x
+
         # Performs fully convolutional inference.
         # TODO: Why is this always called? Confusing.
         # TODO -- should only be used in *test* not validation. Report bug.
+        """
         if not self.training:
             # HACK: Try actually applying the activation function? Will be softmax, most likely.
             x = self.act(x)
             x = x.mean([1, 2, 3])
-
-        x = x.view(x.shape[0], -1)
-        return x
+        """
+        #x = x.view(x.shape[0], -1)
+        return xl

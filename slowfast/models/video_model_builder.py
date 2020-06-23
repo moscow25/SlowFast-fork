@@ -127,9 +127,10 @@ NUM_PITCH_TYPES = 8
 # HACK: velo, spin, spin efficiency
 # TODO: Use common enum
 # NUM_SPIN_TYPES = 4
-NUM_SPIN_TYPES = 14 # 13 # 10 # 11
+NUM_SPIN_TYPES = 15 # 14 # 13 # 10 # 11
 # Types of arm slots -- also enum
 NUM_SLOT_ANGLES = 4
+NUM_HANDS = 2
 # TODO: Add other class types.
 class SlowFastModel(nn.Module):
     """
@@ -423,7 +424,8 @@ class SlowFastModel(nn.Module):
                 ],
                 dropout_rate=cfg.MODEL.DROPOUT_RATE,
                 act_func="none",
-                mlp_sizes= [256, 32],
+                mlp_sizes=[512, 64],
+                softmax_outputs= [NUM_SLOT_ANGLES, NUM_HANDS],
                 mlp_dropout=0.1,
             )
 

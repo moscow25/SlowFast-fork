@@ -6,7 +6,7 @@ import numpy as np
 import torch
 
 
-def random_short_side_scale_jitter(images, min_size, max_size, boxes=None):
+def random_short_side_scale_jitter(images, min_size, max_size, boxes=None, debug=True):
     """
     Perform a spatial short scale jittering on the given images and
     corresponding boxes.
@@ -25,6 +25,8 @@ def random_short_side_scale_jitter(images, min_size, max_size, boxes=None):
     """
     size = int(round(np.random.uniform(min_size, max_size)))
 
+    #print('Scale jitter: ' + str([min_size, max_size, size]))
+
     height = images.shape[2]
     width = images.shape[3]
     if (width <= height and width == size) or (
@@ -41,6 +43,12 @@ def random_short_side_scale_jitter(images, min_size, max_size, boxes=None):
         new_width = int(math.floor((float(width) / height) * size))
         if boxes is not None:
             boxes = boxes * float(new_width) / width
+
+    square = (new_width == new_height)
+    if debug:
+        print('Scale jitter: ' + str([min_size, max_size, size]) + ' -> newsize ' + str([new_height, new_width]))
+        if not square:
+            print('--> not square!')
 
     return (
         torch.nn.functional.interpolate(
@@ -71,8 +79,16 @@ def crop_boxes(boxes, x_offset, y_offset):
 
     return cropped_boxes
 
+# is a point outside of bounds with given offset?
+def point_not_in(x, offset, size, dim):
+    if x < offset:
+        return True
+    if x > (offset + size):
+        return True
+    return False
 
-def random_crop(images, size, boxes=None):
+ATTEMPTS = 20
+def random_crop(images, size, xy_points=[], boxes=None, debug=False):
     """
     Perform random spatial crop on the given images and corresponding boxes.
     Args:
@@ -91,12 +107,38 @@ def random_crop(images, size, boxes=None):
         return images
     height = images.shape[2]
     width = images.shape[3]
-    y_offset = 0
-    if height > size:
-        y_offset = int(np.random.randint(0, height - size))
-    x_offset = 0
-    if width > size:
-        x_offset = int(np.random.randint(0, width - size))
+
+    # HACK -- try to get offsets that accept known points (that need to be included)
+    a = 0
+    while a < ATTEMPTS:
+        a += 1
+        y_offset = 0
+        if height > size:
+            y_offset = int(np.random.randint(0, height - size))
+        x_offset = 0
+        if width > size:
+            x_offset = int(np.random.randint(0, width - size))
+
+        # Test if known points are included
+        fail = False
+        for x,y in xy_points:
+            if point_not_in(x, offset=x_offset, size=size, dim=width):
+                fail = True
+                if debug:
+                    print('--> bad offset '+str([x_offset, y_offset])+' for point ' + str([x,y]))
+                break
+            if point_not_in(y, offset=y_offset, size=size, dim=height):
+                fail = True
+                if debug:
+                    print('--> bad offset '+str([x_offset, y_offset])+' for point ' + str([x,y]))
+                break
+        # Finish our search if no known point trip us up
+        if not fail:
+            break
+
+    if a > 1 and debug:
+        print('final xy' + str([x_offset, y_offset]))
+
     cropped = images[
         :, :, y_offset : y_offset + size, x_offset : x_offset + size
     ]
@@ -105,7 +147,10 @@ def random_crop(images, size, boxes=None):
         crop_boxes(boxes, x_offset, y_offset) if boxes is not None else None
     )
 
-    return cropped, cropped_boxes
+    if debug:
+        print('Random crop: '+ str([height, width, size]) + ' -> ' + str([y_offset, x_offset]))
+
+    return cropped, cropped_boxes, (x_offset, y_offset), (a > 1)
 
 
 def horizontal_flip(prob, images, boxes=None):

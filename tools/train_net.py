@@ -64,12 +64,14 @@ def axis_tilt_similarity(input, target, use_tanh=False):
     return sim
 
 # For debugging, return degrees and clock from (x,y) as above
-def tilt_from_xy(in_t, use_tanh=False):
+def tilt_from_xy(in_t, use_tanh=False, debug=False):
     if use_tanh:
         in_t = torch.tanh(in_t)
-    print(in_t)
+    if debug:
+        print(in_t)
     s = torch.sum((in_t * in_t), dim=1)
-    print(s)
+    if debug:
+        print(s)
     in_t = in_t / s.unsqueeze(1)
     rad = torch.atan2(in_t[:,1], in_t[:,0])
     return rad2deg(rad)
@@ -120,6 +122,7 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
         #labels_extra[:,-1] /= DEGREES_DIV_FACTOR
         #labels_extra[:,-1] -= DEGREES_SUB_FACTOR
         names = labels_tuple[2]
+        crop_xy = labels_tuple[3]
 
         # saving data for saving validation
         if debug:
@@ -158,7 +161,15 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
 
         # HACK -- Output multiple predictions.
         if True:
-            preds, preds_extra = preds_all
+            #print(preds_all)
+            # preds -- category softmax
+            # preds_extra -- regression values (+spin axis)
+            # preds_extra_sm1 -- release angle softmax
+            # preds_extra_sm1 -- handedness softmax
+            preds, preds_extra_all = preds_all
+            preds_extra = preds_extra_all[0]
+            preds_extra_sm1 = preds_extra_all[1]
+            preds_extra_sm2 = preds_extra_all[2]
         else:
             preds = preds_all
             preds_extra = None
@@ -206,7 +217,7 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
         r_loss = (r_loss * (preds_extra.shape[1]-2) + axis_loss*2)/preds_extra.shape[1]
 
         # HACK -- a kind of "weight norm" on coordinates prediction
-        w_loss = circle_unit_norm(preds_extra[:,-2:]) * 0.001
+        w_loss = circle_unit_norm(preds_extra[:,-2:]) * 0.005 # 0.001
 
         #r_loss += loss_fun_degrees(preds_extra[:,-1], labels_extra[:,-1],
         #    scale=DEGREES_DIV_FACTOR, offset=DEGREES_SUB_FACTOR*DEGREES_DIV_FACTOR)
@@ -291,7 +302,7 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
 
 
 @torch.no_grad()
-def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., debug=True):
+def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., debug=False):
     """
     Evaluate the model on the val set.
     Args:
@@ -312,15 +323,17 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., d
     output_header = ['filepath', 'spinAxis', 'spinAxisDeg', 'pitchType',
         'speed_norm', 'spin_norm', 'trueSpin_norm',
         'spinEfficiency_norm', 'topSpin_norm', 'sideSpin_norm',
-        'rifleSpin_norm', 'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm', 'armAngle_norm',
+        'rifleSpin_norm', 'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm',
+        'armAngle_norm', 'isLefty_norm',
         'spinAxisDeg_copy',
         'pitchType0_logit', 'pitchType1_logit', 'pitchType2_logit', 'pitchType3_logit',
         'pitchType4_logit', 'pitchType5_logit', 'pitchType6_logit', 'pitchType7_logit',
         'speed_norm_pred', 'spin_norm_pred', 'trueSpin_norm_pred',
         'spinEfficiency_norm_pred', 'topSpin_norm_pred', 'sideSpin_norm_pred',
-        'rifleSpin_norm_pred', 'vb_norm_pred', 'hb_norm_pred', 'hAngle_norm_pred', 'rAngle_norm_pred', 'armAngle_norm_pred',
-        'spinAxis_X_pred', 'spinAxis_Y_pred',
-        'c_loss', 'r_loss', 'total_loss']
+        'rifleSpin_norm_pred', 'vb_norm_pred', 'hb_norm_pred', 'hAngle_norm_pred', 'rAngle_norm_pred',
+        'armAngle_norm_pred', 'isLefty_norm_pred',
+        'spinAxis_X_pred', 'spinAxis_Y_pred', 'spinAxisDeg_pred',
+        'c_loss', 'r_loss', 'total_loss'] #, 'crop_x', 'crop_y']
 
     for cur_iter, (inputs, labels_tuple, _, meta) in enumerate(val_loader):
         # Transferthe data to the current GPU device.
@@ -336,6 +349,8 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., d
         labels_extra = [l.unsqueeze(1) for l in labels_extra]
         labels_extra = torch.cat(labels_extra, dim=1)
         names = labels_tuple[2]
+        # If we want to save (X,Y) that was ultimately used for making crop on this video...
+        crop_xy = labels_tuple[3]
 
         # saving data for saving validation
         if debug:
@@ -380,7 +395,14 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., d
             preds_all = model(inputs)
             # HACK -- Output multiple predictions.
             if True:
-                preds, preds_extra = preds_all
+                # preds -- category softmax
+                # preds_extra -- regression values (+spin axis)
+                # preds_extra_sm1 -- release angle softmax
+                # preds_extra_sm1 -- handedness softmax
+                preds, preds_extra_all = preds_all
+                preds_extra = preds_extra_all[0]
+                preds_extra_sm1 = preds_extra_all[1]
+                preds_extra_sm2 = preds_extra_all[2]
             else:
                 preds = preds_all
                 preds_extra = None
@@ -408,12 +430,23 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., d
                 #print('losses')
                 #print(w_loss)
                 #print(val_outs.shape, preds.shape, preds_extra.shape, w_loss.shape)
+
+                # Calculate spin axis degree from predicted X,Y
+                spin_axis_out = tilt_from_xy(preds_extra[:,-2:])
+
                 val_outs = np.concatenate((val_outs, preds.detach().cpu().numpy(),
                     preds_extra.detach().cpu().numpy(),
+                    spin_axis_out.unsqueeze(1).cpu().numpy(),
                     c_loss.unsqueeze(1).detach().cpu().numpy(),
                     torch.mean(r_loss, dim=1).unsqueeze(1).detach().cpu().numpy(),
                     w_loss.unsqueeze(1).detach().cpu().numpy()), axis=1)
                 outputs.append(val_outs)
+
+                #print(outputs)
+                #print(crop_xy)
+
+                # crop dimensions -- don't worry about it...
+                #outputs.append(crop_xy)
             # Reduce manually
             c_loss = torch.mean(c_loss)
             r_loss = torch.mean(r_loss)
@@ -464,9 +497,12 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., d
         outputs = np.concatenate(outputs, axis=0)
         def last(n): return n[-1]
         outputs = outputs[outputs[:,-1].argsort()]
-        print(outputs)
+        #print(outputs)
         print(outputs.shape)
-        for k in outputs[-20:, :].tolist():
+        print(len(output_header))
+        print(output_header)
+        assert outputs.shape[1] == len(output_header)
+        for k in outputs[-5:, :].tolist():
             print(k)
 
         # Save data to local path.

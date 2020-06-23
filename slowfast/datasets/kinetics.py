@@ -17,6 +17,10 @@ from .build import DATASET_REGISTRY
 
 logger = logging.get_logger(__name__)
 
+# TODO: turn into command line params
+# disable size jitter -- screws up baseball frames
+NO_JITTER = True
+
 
 @DATASET_REGISTRY.register()
 class Kinetics(torch.utils.data.Dataset):
@@ -255,35 +259,52 @@ class Kinetics(torch.utils.data.Dataset):
             frames = frames / torch.tensor(self.cfg.DATA.STD)
             # T H W C -> C T H W.
             frames = frames.permute(3, 0, 1, 2)
+
+            # Hack
+            label = self._labels[index]
+            info = self._info[index]
+
             # Perform data augmentation.
             if debug:
                 print('Shape into spatial sampling: %s' % str(frames.shape))
-            frames = self.spatial_sampling(
+
+            # If present, pass points to be included...
+            xy_points = []
+            # x1_adj,x2_adj,y1_adj,y2_adj
+            xy_points.append([info['x1_adj'], info['y1_adj']])
+            xy_points.append([info['x2_adj'], info['y2_adj']])
+
+            frames, crop_xy, pxy = self.spatial_sampling(
                 frames,
                 spatial_idx=spatial_sample_index,
                 min_scale=min_scale,
                 max_scale=max_scale,
                 crop_size=crop_size,
+                xy_points=xy_points,
                 debug=debug,
             )
             if debug:
                 print('Shape after spatial sampling: %s' % str(frames.shape))
 
-            label = self._labels[index]
-            info = self._info[index]
+            # Massive hack -- do we want to print results (for debug)
+            if pxy and False:
+                debug=True
+
             # HACK -- collect "extra information" for loss function
             # NOTE -- make sure to include spinAxisDegrees last! Because we use custom loss for that...
             extra_label_cols = ['speed_norm', 'spin_norm', 'trueSpin_norm', 'spinEfficiency_norm',
                 'topSpin_norm', 'sideSpin_norm', 'rifleSpin_norm',
-                'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm', 'armAngle_norm', 'spinAxisDeg']
+                'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm',
+                'armAngle_norm', 'isLefty_norm', 'spinAxisDeg']
             extra_labels = [info[c] for c in extra_label_cols]
             name_cols = ['filepath', 'spinAxis', 'spinAxisDeg']
             fname = [info[c] for c in name_cols]
             if debug:
+                print(fname)
                 print('extra labels -- speed, spin etc [normalized]')
                 print(extra_labels)
             frames = utils.pack_pathway_output(self.cfg, frames)
-            return frames, (label, extra_labels, fname), index, {}
+            return frames, (label, extra_labels, fname, crop_xy), index, {}
         else:
             raise RuntimeError(
                 "Failed to fetch video after {} retries.".format(
@@ -305,6 +326,7 @@ class Kinetics(torch.utils.data.Dataset):
         min_scale=256,
         max_scale=320,
         crop_size=224,
+        xy_points = [],
         debug=False,
     ):
         """
@@ -327,21 +349,36 @@ class Kinetics(torch.utils.data.Dataset):
             frames (tensor): spatially sampled frames.
         """
         if debug:
-            print('[frames.shape, spatial_idx, min_scale, max_scale, crop_size]')
-            print([frames.shape, spatial_idx, min_scale, max_scale, crop_size])
+            print('Spacial transform\n' + '[frames.shape, spatial_idx, min_scale, max_scale, crop_size]\n' + str([frames.shape, spatial_idx, min_scale, max_scale, crop_size]))
         assert spatial_idx in [-1, 0, 1, 2]
         if spatial_idx == -1:
-            frames, _ = transform.random_short_side_scale_jitter(
-                frames, min_scale, max_scale
-            )
-            frames, _ = transform.random_crop(frames, crop_size)
+            if debug:
+                print('Spacial IDX -1')
+
+            # HACK -- turn off jitter
+            # TODO -- keep it... but need to know proportions to use (X,Y) for cropping
+            if not NO_JITTER:
+                if debug:
+                    print('doing short side jitter')
+                frames, _ = transform.random_short_side_scale_jitter(
+                    frames, min_scale, max_scale
+                )
+            if debug:
+                print('doing random crop')
+            frames, _, crop_xy, pxy = transform.random_crop(frames, crop_size, xy_points=xy_points, debug=debug)
+            if debug:
+                print('final xy' + str(crop_xy))
+            if debug:
+                print('doing h flip')
             frames, _ = transform.horizontal_flip(0.5, frames)
         else:
             # The testing is deterministic and no jitter should be performed.
             # min_scale, max_scale, and crop_size are expect to be the same.
+            print('deterministic crop....')
             assert len({min_scale, max_scale, crop_size}) == 1
             frames, _ = transform.random_short_side_scale_jitter(
                 frames, min_scale, max_scale
             )
+            print('uniform crop')
             frames, _ = transform.uniform_crop(frames, crop_size, spatial_idx)
-        return frames
+        return frames, crop_xy, pxy
