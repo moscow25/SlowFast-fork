@@ -8,6 +8,7 @@ import tempfile
 import pandas as pd
 import pprint
 import torch
+import tqdm
 from fvcore.nn.precise_bn import get_bn_modules, update_bn_stats
 
 import slowfast.models.losses as losses
@@ -85,7 +86,7 @@ def circle_unit_norm(in_t):
 DEGREES_DIV_FACTOR = 90.
 DEGREES_SUB_FACTOR = 2.
 def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
-    r_loss_weight=5.0, debug=False):
+    r_loss_weight=10.0, debug=False):
     """
     Perform the video training for one epoch.
     Args:
@@ -105,7 +106,7 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
 
     # Hack -- save details and biggest errors
     outputs = []
-    for cur_iter, (inputs, labels_tuple, _, meta) in enumerate(train_loader):
+    for cur_iter, (inputs, labels_tuple, _, meta) in tqdm.tqdm(enumerate(train_loader), total=len(train_loader)):
         # Transfer the data to the current GPU device.
         if isinstance(inputs, (list,)):
             for i in range(len(inputs)):
@@ -183,8 +184,8 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
         # Explicitly declare reduction to mean.
         loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction='none')#(reduction="mean")
         # Apply "Huber loss" to regression terms -- L2 under norm 1.0, L1 otherwise (not as sensitive to outliers)
-        #loss_fun_extra = torch.nn.SmoothL1Loss()
-        loss_fun_extra = torch.nn.MSELoss(reduction='none')
+        loss_fun_extra = torch.nn.SmoothL1Loss(reduction='none')
+        #loss_fun_extra = torch.nn.MSELoss(reduction='none')
         loss_fun_degrees = normal_degrees_loss
 
         # Compute the loss.
@@ -302,7 +303,7 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
 
 
 @torch.no_grad()
-def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., debug=False):
+def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=10., debug=False):
     """
     Evaluate the model on the val set.
     Args:
@@ -324,14 +325,14 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., d
         'speed_norm', 'spin_norm', 'trueSpin_norm',
         'spinEfficiency_norm', 'topSpin_norm', 'sideSpin_norm',
         'rifleSpin_norm', 'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm',
-        'armAngle_norm', 'isLefty_norm',
+        'armAngle_norm', 'isLefty_norm', 'isStrike_norm',
         'spinAxisDeg_copy',
         'pitchType0_logit', 'pitchType1_logit', 'pitchType2_logit', 'pitchType3_logit',
         'pitchType4_logit', 'pitchType5_logit', 'pitchType6_logit', 'pitchType7_logit',
         'speed_norm_pred', 'spin_norm_pred', 'trueSpin_norm_pred',
         'spinEfficiency_norm_pred', 'topSpin_norm_pred', 'sideSpin_norm_pred',
         'rifleSpin_norm_pred', 'vb_norm_pred', 'hb_norm_pred', 'hAngle_norm_pred', 'rAngle_norm_pred',
-        'armAngle_norm_pred', 'isLefty_norm_pred',
+        'armAngle_norm_pred', 'isLefty_norm_pred', 'isStrike_norm_pred',
         'spinAxis_X_pred', 'spinAxis_Y_pred', 'spinAxisDeg_pred',
         'c_loss', 'r_loss', 'total_loss'] #, 'crop_x', 'crop_y']
 
@@ -415,8 +416,8 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=5., d
             # Explicitly declare reduction to mean.
             loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="none")#(reduction="mean")
             # Apply "Huber loss" to regression terms -- L2 under norm 1.0, L1 otherwise (not as sensitive to outliers)
-            #loss_fun_extra = torch.nn.SmoothL1Loss()
-            loss_fun_extra = torch.nn.MSELoss(reduction="none")
+            loss_fun_extra = torch.nn.SmoothL1Loss(reduction="none")
+            #loss_fun_extra = torch.nn.MSELoss(reduction="none")
             c_loss = loss_fun(preds, labels)
             #r_loss = loss_fun_extra(preds_extra, labels_extra)
             # HACK -- "normal" regression loss, except the last two columns ([x,y] for spin axis)

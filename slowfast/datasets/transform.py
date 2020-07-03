@@ -45,8 +45,12 @@ def random_short_side_scale_jitter(images, min_size, max_size, boxes=None, debug
             boxes = boxes * float(new_width) / width
 
     square = (new_width == new_height)
+    scale_x = new_width / width
+    scale_y = new_height / height
+    scale = scale_x
     if debug:
         print('Scale jitter: ' + str([min_size, max_size, size]) + ' -> newsize ' + str([new_height, new_width]))
+        print('scales\tX: '+str(scale_x)+'\tY: '+str(scale_y))
         if not square:
             print('--> not square!')
 
@@ -58,6 +62,7 @@ def random_short_side_scale_jitter(images, min_size, max_size, boxes=None, debug
             align_corners=False,
         ),
         boxes,
+        scale,
     )
 
 
@@ -87,8 +92,17 @@ def point_not_in(x, offset, size, dim):
         return True
     return False
 
-ATTEMPTS = 20
-def random_crop(images, size, xy_points=[], boxes=None, debug=False):
+# given collection of points (in an axis, compute min/max offset)
+def min_max_offset(points=[], min_x=0, max_x=900, len_x=224):
+    min_off, max_off = 0, max(max_x - len_x, 0)
+    # min point that includes max...
+    min_t = max(points) - len_x
+    max_t = min(points)
+    return (max(min_off, min_t), min(max_off, max_t))
+
+
+ATTEMPTS = 100 # 20
+def random_crop(images, size, xy_points=[], boxes=None, scale=1.0, debug=False):
     """
     Perform random spatial crop on the given images and corresponding boxes.
     Args:
@@ -108,8 +122,13 @@ def random_crop(images, size, xy_points=[], boxes=None, debug=False):
     height = images.shape[2]
     width = images.shape[3]
 
+    # rescale the points...
+    xy_points = [(x*scale, y*scale) for x,y in xy_points]
+
     # HACK -- try to get offsets that accept known points (that need to be included)
     a = 0
+    if debug:
+        print('h,w,s,points: '+str([height, width, size, xy_points]))
     while a < ATTEMPTS:
         a += 1
         y_offset = 0
@@ -118,6 +137,28 @@ def random_crop(images, size, xy_points=[], boxes=None, debug=False):
         x_offset = 0
         if width > size:
             x_offset = int(np.random.randint(0, width - size))
+
+
+        # Sample min_max offset...
+        if len(xy_points) > 0:
+            xp = []
+            yp = []
+            for x,y in xy_points:
+                xp.append(x)
+                yp.append(y)
+            min_x,max_x = min_max_offset(points=xp, min_x=0, max_x=width, len_x=size)
+            if debug:
+                print('min/max '+str([min_x, max_x]))
+            assert min_x <= max_x, "bounds error " + str([min_x, max_x])
+            x_offset = int(np.random.randint(int(min_x),int(max_x)+1))
+
+            min_y,max_y = min_max_offset(points=yp, min_x=0, max_x=height, len_x=size)
+            if debug:
+                print('min/max '+str([min_y, max_y]))
+            y_offset = int(np.random.randint(int(min_y),int(max_y)+1))
+
+            if debug:
+                print('considering offset ('+str([x_offset, y_offset])+') for poinsts '+str(xy_points))
 
         # Test if known points are included
         fail = False

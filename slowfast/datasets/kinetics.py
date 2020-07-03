@@ -19,7 +19,7 @@ logger = logging.get_logger(__name__)
 
 # TODO: turn into command line params
 # disable size jitter -- screws up baseball frames
-NO_JITTER = True
+NO_JITTER = True # False # True
 
 
 @DATASET_REGISTRY.register()
@@ -218,7 +218,8 @@ class Kinetics(torch.utils.data.Dataset):
 
             # Select a random video if the current video was not able to access.
             if video_container is None:
-                print('<ERROR>: take random video')
+                print(self._path_to_videos[index])
+                print('<ERROR>: take random video 1')
                 index = random.randint(0, len(self._path_to_videos) - 1)
                 continue
             else:
@@ -248,7 +249,9 @@ class Kinetics(torch.utils.data.Dataset):
             # If decoding failed (wrong format, video is too short, and etc),
             # select another video.
             if frames is None:
-                print('<ERROR>: take random video')
+                print(self._path_to_videos[index])
+                print('<ERROR>: take random video 2')
+                print(self._path_to_videos[index])
                 index = random.randint(0, len(self._path_to_videos) - 1)
                 continue
 
@@ -295,7 +298,7 @@ class Kinetics(torch.utils.data.Dataset):
             extra_label_cols = ['speed_norm', 'spin_norm', 'trueSpin_norm', 'spinEfficiency_norm',
                 'topSpin_norm', 'sideSpin_norm', 'rifleSpin_norm',
                 'vb_norm', 'hb_norm', 'hAngle_norm', 'rAngle_norm',
-                'armAngle_norm', 'isLefty_norm', 'spinAxisDeg']
+                'armAngle_norm', 'isLefty_norm', 'isStrike_norm', 'spinAxisDeg']
             extra_labels = [info[c] for c in extra_label_cols]
             name_cols = ['filepath', 'spinAxis', 'spinAxisDeg']
             fname = [info[c] for c in name_cols]
@@ -357,15 +360,19 @@ class Kinetics(torch.utils.data.Dataset):
 
             # HACK -- turn off jitter
             # TODO -- keep it... but need to know proportions to use (X,Y) for cropping
+            scale = 1.0 # default scale [no jitter]
             if not NO_JITTER:
                 if debug:
                     print('doing short side jitter')
-                frames, _ = transform.random_short_side_scale_jitter(
-                    frames, min_scale, max_scale
-                )
+                try:
+                    frames, _, scale = transform.random_short_side_scale_jitter(
+                        frames, min_scale, max_scale, debug=debug
+                    )
+                except ValueError:
+                    print('Value error in rescale -- keep original image?')
             if debug:
                 print('doing random crop')
-            frames, _, crop_xy, pxy = transform.random_crop(frames, crop_size, xy_points=xy_points, debug=debug)
+            frames, _, crop_xy, pxy = transform.random_crop(frames, crop_size, xy_points=xy_points, scale=scale, debug=debug)
             if debug:
                 print('final xy' + str(crop_xy))
             if debug:

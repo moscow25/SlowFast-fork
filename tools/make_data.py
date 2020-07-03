@@ -18,8 +18,30 @@ import glob
 import os
 import pathlib
 import pickle
+import hashlib
 
-# Translate 10:00 to 0-360 degrees
+
+pi = 3.14159265358979323846
+def deg2rad(t):
+    return t * pi / 180.
+
+def rad2deg(r):
+    return r * 180. / pi
+
+# For debugging, return degrees on clock from (x,y) as above
+def tilt_from_xy(in_t, use_tanh=False, debug=False):
+    if use_tanh:
+        in_t = torch.tanh(in_t)
+    if debug:
+        print(in_t)
+    s = torch.sum((in_t * in_t), dim=1)
+    if debug:
+        print(s)
+    in_t = in_t / s.unsqueeze(1)
+    rad = torch.atan2(in_t[:,1], in_t[:,0])
+    return rad2deg(rad)
+
+# Translate clock (10:00) to 0-360 degrees
 def degrees_from_clock(clock):
     h, m = clock.split(':')
     h, m = int(h), int(m)
@@ -28,9 +50,9 @@ def degrees_from_clock(clock):
     return d
 
 # adjust image scale
-XSCALE_BIG = 900.
+XSCALE_BIG = 864.
 XSCALE_ADJ = 320.
-YSCALE_BIG = 700.
+YSCALE_BIG = 688.
 YSCALE_ADJ = 256.
 def adjust_scale(x, in_scale, out_scale, is_x=False):
     # NOTE: input scale has (0,0) as TOP LEFT. Not sure that's how other scale does it...
@@ -38,16 +60,36 @@ def adjust_scale(x, in_scale, out_scale, is_x=False):
     z = x * (out_scale/in_scale)
     return z
 
+FIXED_SORT = True
+PAD_XY = 0.5 # How far to pad the ball location on both sides, in each dimension? [for inclusion]
+
+# pad both sides
+def adjust_min_max(x, xy='x'):
+    #print(x, xy)
+    if xy == 'x':
+        x1, x2 = x['x1_adj'], x['x2_adj']
+    elif xy == 'y':
+        x1, x2 = x['y1_adj'], x['y2_adj']
+    min_x, max_x, delt_x = min(x1,x2), max(x1,x2), abs(x1-x2)
+    #print(min_x, max_x, delt_x)
+    min_x = max(min_x - PAD_XY*delt_x, 0)
+    max_x = min(max_x + PAD_XY*delt_x, XSCALE_BIG if xy=='x' else YSCALE_BIG)
+    return [min_x, max_x]
+
 def main():
     parser = argparse.ArgumentParser(description="")
-    parser.add_argument("--vid_path", type=str, default='/home/ubuntu/data/bball/edge-100/clips/*mp4',
+    #parser.add_argument("--vid_path", type=str, default='/data/bball/edge-100/full_clips/*mov',
+    #    help="(glob) path to video clips")
+    parser.add_argument("--vid_path", type=str, default='/data/bball/edge-100/clips/*mp4',
         help="(glob) path to video clips")
-    parser.add_argument("--data_path", type=str, default='/home/ubuntu/data/bball/edge-100/csv/all_dfv3_hand.csv',
+    parser.add_argument("--data_path", type=str, default='/home/ubuntu/data/bball/edge-100/csv/all_dfv3_hand_exclude.csv',
         help="(glob) path to csv of info about video clips")
     parser.add_argument("--out_path", type=str, default='/home/ubuntu/open_source/SlowFast-fork/data/edge-100/',
         help="path to output file (as CSV)")
-    parser.add_argument('--val_frac', type=float, default=0.2,
+    parser.add_argument('--val_frac', type=float, default=0.3333,
         help='validation split?')
+    parser.add_argument('--adjust_scale', action='store_true', default=False,
+        help='adjust scale for rescaled video? (XY coordinates, etc)')
     args = parser.parse_args()
     print(args)
 
@@ -93,9 +135,9 @@ def main():
     print(missing_vids)
 
     # Extract columns of interest
-    SAVE_COLS = ['filepath', 'fullName', 'ReleaseFrame', 'pitchType', 'Is Strike', 'speed', 'spin', 'trueSpin', 'spinEfficiency',
+    SAVE_COLS = ['filepath', 'name_canon', 'fullName', 'ReleaseFrame', 'pitchType', 'Is Strike', 'speed', 'spin', 'trueSpin', 'spinEfficiency',
         'Top Spin', 'Side Spin', 'Rifle Spin', 'spinAxis', 'vb','hb', 'Horizontal Angle', 'Release Angle',
-        'arm_angle', 'arm_angle_class', 'Handedness', 'x1_new', 'y1_new', 'x2_new', 'y2_new']
+        'arm_angle', 'arm_angle_class', 'Handedness', 'x1_new', 'y1_new', 'x2_new', 'y2_new', 'isError']
     # TODO: Store the bro's name -- for eval purposes
     # TODO: Who's a lefty? Also -- flip images in training...
     print(merge_df.keys())
@@ -112,13 +154,14 @@ def main():
 
     # Handedness -- "is lefty"
     merge_df['isLefty'] = merge_df['Handedness'].apply(lambda x: 1.0 if x.upper() == 'L' else 0.)
+    merge_df['isStrike'] = merge_df['Is Strike'].apply(lambda x: 1.0 if x.upper() == 'YES' else 0.)
 
     # Debug -- notice the patterns in pitch type, spin axis and break... guys are pretty consistent about this.
     print(merge_df[['pitchType', 'speed', 'spin', 'vb','hb', 'spinAxis', 'spinAxisDeg', 'isLefty']])
 
     # Normalize stats for regression. [Save norm values so we can rebuild projects]
     cols_to_normalize = ['speed', 'spin', 'trueSpin', 'spinEfficiency',
-        'Top Spin', 'Side Spin', 'Rifle Spin', 'vb','hb', 'Horizontal Angle', 'Release Angle', 'arm_angle', 'isLefty']
+        'Top Spin', 'Side Spin', 'Rifle Spin', 'vb','hb', 'Horizontal Angle', 'Release Angle', 'arm_angle', 'isLefty', 'isStrike']
     norm_inputs = merge_df[cols_to_normalize].values
 
     print('Normalizing values for regression...')
@@ -147,33 +190,72 @@ def main():
     merge_df['rAngle_norm'] = norm_out[:,10]
     merge_df['armAngle_norm'] = norm_out[:,11]
     merge_df['isLefty_norm'] = norm_out[:,12]
+    merge_df['isStrike_norm'] = norm_out[:,13]
     print(merge_df.keys())
     print(merge_df.head())
 
     # For X1..Y2 -- bounding box on the detected ball -- translate from 900x700 coordinates (top left 0,0) to 320x256 coordinates
-    merge_df['x1_adj'] = merge_df['x1_new'].apply(lambda x: adjust_scale(x, in_scale=XSCALE_BIG, out_scale=XSCALE_ADJ, is_x=True))
-    merge_df['x2_adj'] = merge_df['x2_new'].apply(lambda x: adjust_scale(x, in_scale=XSCALE_BIG, out_scale=XSCALE_ADJ, is_x=True))
-    merge_df['y1_adj'] = merge_df['y1_new'].apply(lambda x: adjust_scale(x, in_scale=YSCALE_BIG, out_scale=YSCALE_ADJ, is_x=False))
-    merge_df['y2_adj'] = merge_df['y2_new'].apply(lambda x: adjust_scale(x, in_scale=YSCALE_BIG, out_scale=YSCALE_ADJ, is_x=False))
+    merge_df['x1_adj'] = merge_df['x1_new']
+    merge_df['x2_adj'] = merge_df['x2_new']
+    merge_df['y1_adj'] = merge_df['y1_new']
+    merge_df['y2_adj'] = merge_df['y2_new']
+    # Do we pad the (x,y) first?
+    if PAD_XY > 0.:
+        # reset new bounds as new XY
+        merge_df[['x1_adj', 'x2_adj']] = merge_df[['x1_adj', 'x2_adj']].apply(lambda x: adjust_min_max(x, xy='x'), axis=1).tolist()
+        merge_df[['y1_adj', 'y2_adj']] = merge_df[['y1_adj', 'y2_adj']].apply(lambda x: adjust_min_max(x, xy='y'), axis=1).tolist()
+
+    if args.adjust_scale:
+        merge_df['x1_adj'] = merge_df['x1_adj'].apply(lambda x: adjust_scale(x, in_scale=XSCALE_BIG, out_scale=XSCALE_ADJ, is_x=True))
+        merge_df['x2_adj'] = merge_df['x2_adj'].apply(lambda x: adjust_scale(x, in_scale=XSCALE_BIG, out_scale=XSCALE_ADJ, is_x=True))
+        merge_df['y1_adj'] = merge_df['y1_adj'].apply(lambda x: adjust_scale(x, in_scale=YSCALE_BIG, out_scale=YSCALE_ADJ, is_x=False))
+        merge_df['y2_adj'] = merge_df['y2_adj'].apply(lambda x: adjust_scale(x, in_scale=YSCALE_BIG, out_scale=YSCALE_ADJ, is_x=False))
+    else:
+        pass
 
     # Drop data without 'Release Frame'?
     #print(merge_df['Release Frame'])
     vids_count = merge_df.shape[0]
+    # has release frame
     merge_df = merge_df[~merge_df['ReleaseFrame'].isna()]
+    # has (x,y) for ball release
+    merge_df = merge_df[~merge_df['x1_adj'].isna()]
+    # not manually marked as error
+    merge_df = merge_df[merge_df['isError']==0]
     print('Kept %d/%d vids with Release Frame data.' % (merge_df.shape[0], vids_count))
 
     # Shuffle.
     merge_df = merge_df.sample(frac=1.)
 
+    # Sort by hash(name) -- for consistent order...
+    #hash_object = hashlib.md5(b'Hello World')
+    #print(hash_object.hexdigest())
+
+    merge_df['name_hash'] = merge_df['name_canon'].apply(lambda x: hashlib.md5(x.encode()).hexdigest())
+    if FIXED_SORT:
+        merge_df = merge_df.sort_values(by='name_hash')
+        print(merge_df.head())
+
+
     # Train/Val split
+    assert args.val_frac == 0.3333, 'Hack -- need 3x cross fold validation'
     val_size = int(merge_df.shape[0]*args.val_frac)
     print('Train/Val split: %d/%d' % (merge_df.shape[0]-val_size, val_size))
 
     # Save results...
     print('Saving results %s to %s' % (str(merge_df.shape), args.out_path))
     merge_df.to_csv(os.path.join(args.out_path, 'all_vids.csv'), index=False)
-    merge_df[:-val_size].to_csv(os.path.join(args.out_path, 'train.csv'), index=False)
-    merge_df[-val_size:].to_csv(os.path.join(args.out_path, 'val.csv'), index=False)
+
+    # Create 3x version of train/val split
+    merge_df[val_size:].to_csv(os.path.join(args.out_path, 'train_1_3.csv'), index=False)
+    merge_df[:val_size].to_csv(os.path.join(args.out_path, 'val_1_3.csv'), index=False)
+    pd.concat([merge_df[:val_size], merge_df[-val_size:]]).to_csv(os.path.join(args.out_path, 'train_2_3.csv'), index=False)
+    merge_df[val_size:-val_size].to_csv(os.path.join(args.out_path, 'val_2_3.csv'), index=False)
+    merge_df[:-val_size].to_csv(os.path.join(args.out_path, 'train_3_3.csv'), index=False)
+    merge_df[-val_size:].to_csv(os.path.join(args.out_path, 'val_3_3.csv'), index=False)
+    # Default train with first 1/3
+    merge_df[val_size:].to_csv(os.path.join(args.out_path, 'train.csv'), index=False)
+    merge_df[:val_size].to_csv(os.path.join(args.out_path, 'val.csv'), index=False)
     # Save normalization function (useful to transform predictions back to real value)
     with open(os.path.join(args.out_path, 'data_scaler.pkl'), 'wb') as norm_file:
         pickle.dump(scaler, norm_file)

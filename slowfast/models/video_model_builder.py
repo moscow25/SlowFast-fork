@@ -127,7 +127,7 @@ NUM_PITCH_TYPES = 8
 # HACK: velo, spin, spin efficiency
 # TODO: Use common enum
 # NUM_SPIN_TYPES = 4
-NUM_SPIN_TYPES = 15 # 14 # 13 # 10 # 11
+NUM_SPIN_TYPES = 16 #15 # 14 # 13 # 10 # 11
 # Types of arm slots -- also enum
 NUM_SLOT_ANGLES = 4
 NUM_HANDS = 2
