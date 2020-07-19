@@ -8,6 +8,7 @@ import tempfile
 import pandas as pd
 import pprint
 import torch
+import torch.nn.functional as F
 import tqdm
 from fvcore.nn.precise_bn import get_bn_modules, update_bn_stats
 
@@ -83,10 +84,70 @@ def circle_unit_norm(in_t):
     d = torch.ones_like(s)-s
     return torch.mean(d*d)
 
+# Pitch specific enums & functions
+PITCH_TYPES = ['Other', 'FastBall', 'TwoSeamFastBall', 'Cutter', 'ChangeUp',
+    'CurveBall', 'Slider', 'Splitter']
+PITCH_TYPE_ENUM = {'Other':0, 'FastBall':1, 'TwoSeamFastBall':2, 'Cutter':3, 'ChangeUp':4,
+    'CurveBall':5, 'Slider':6, 'Splitter':7}
+
+# Soft BCE... (label smoothing)
+# from https://github.com/clara-parabricks/DL4VC/blob/master/dl4vc/objectives.py
+#
+# vt_loss_criteria = SoftBCEWithLogitsLoss(label_smoothing=args.label_smoothing,
+#        num_classes=3, close_match_window=args.close_match_window,
+#        pos_weight=torch.Tensor([args.fp_train_weight,1.,1.]).cuda())
+class SoftBCEWithLogitsLoss(torch.nn.BCEWithLogitsLoss):
+    """Soft version of BCEWithLogitsLoss. Supports label smoothing.
+    Args:
+        label_smoothing (float):
+            The smoothing parameter :math:`epsilon` for label smoothing. For InceptionV3,
+            :math:`epsilon`=0.1 [albeit with 1000 classes]. What does DeepVariant use?
+        weight (:class:`torch.Tensor`):
+            A 1D tensor of size equal to the number of classes. Pass-through to BCELoss.
+        num_classes (int):
+            The number of classes. Matters for label smoothing.
+    """
+
+    def __init__(self, label_smoothing=0, pos_weight=None, num_classes=2, close_match_window=3., **kwargs):
+        super(SoftBCEWithLogitsLoss, self).__init__(**kwargs)
+        self.label_smoothing = label_smoothing
+        self.confidence = 1 - self.label_smoothing
+        self.num_classes = num_classes
+        # For numerical stability -- not really necessary since no exp() but just in case
+        self.epsilon = 1.e-8
+        self.close_match_window = close_match_window
+        self.register_buffer('pos_weight', pos_weight)
+        assert label_smoothing >= 0.0 and label_smoothing <= 1.0
+
+    def forward(self, input, target, weight=None):
+        # Expand targets and add smoothing value
+        one_hot = torch.zeros_like(input)
+        one_hot.fill_(self.label_smoothing / (self.num_classes - 1))
+        one_hot.scatter_(1, target, self.confidence)
+
+        # Find which examples within constant distance of label_smoothing
+        # Sigmoid and clamp -- manually expand for weight calculation
+        #input_pred = torch.sigmoid(input)
+        input_pred = F.softmax(input, dim=1)
+        input_pred = input_pred.clamp(self.epsilon, 1. - self.epsilon)
+        distance = torch.sum(torch.abs(input_pred - one_hot), dim=1) / 2.
+        close_distance = distance <= (self.label_smoothing * self.close_match_window)
+
+        # Pass example weight, if any (None is fine) and category weight (less to common cases)
+        return F.binary_cross_entropy_with_logits(input, one_hot,
+                                                  weight,
+                                                  reduction='none',
+                                                  pos_weight=self.pos_weight), close_distance
+
+
 DEGREES_DIV_FACTOR = 90.
 DEGREES_SUB_FACTOR = 2.
+LABEL_SMOOTH_VAL=0.02 #0.1 # avoid over-saturation in the softmax...
+GRAD_CLIP=1.0 # 0.5
+R_LOSS_WEIGHT=3.0
+SHARE_EMBED=True #False # True # use common ~256 space for both softmax and r-loss?
 def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
-    r_loss_weight=10.0, debug=False):
+    grad_clip=GRAD_CLIP, shared_embedding=SHARE_EMBED, r_loss_weight=R_LOSS_WEIGHT, debug=False):
     """
     Perform the video training for one epoch.
     Args:
@@ -103,6 +164,11 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
     model.train()
     train_meter.iter_tic()
     data_size = len(train_loader)
+
+    # HACK -- define "soft" loss function...
+    soft_bce_categories = SoftBCEWithLogitsLoss(label_smoothing=LABEL_SMOOTH_VAL,
+        num_classes=len(PITCH_TYPES), close_match_window=4.)
+        #pos_weight=torch.Tensor([args.fp_train_weight,1.,1.]).cuda())
 
     # Hack -- save details and biggest errors
     outputs = []
@@ -162,34 +228,59 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
 
         # HACK -- Output multiple predictions.
         if True:
-            #print(preds_all)
+            if debug:
+                print('Model outputs/predictions:')
+                print(preds_all)
+                print(len(preds_all))
             # preds -- category softmax
             # preds_extra -- regression values (+spin axis)
             # preds_extra_sm1 -- release angle softmax
             # preds_extra_sm1 -- handedness softmax
             preds, preds_extra_all = preds_all
+            if debug:
+                print('Preds:')
+                print(preds.shape)
+                print(len(preds_extra_all))
+                print([l.shape for l in preds_extra_all])
+                print('------')
             preds_extra = preds_extra_all[0]
             preds_extra_sm1 = preds_extra_all[1]
             preds_extra_sm2 = preds_extra_all[2]
+
+            # HACK -- use shared embeddings (for regularization)
+            if shared_embedding:
+                preds = preds_extra_sm1
+
         else:
             preds = preds_all
             preds_extra = None
 
         if debug:
+            print('Predictions:')
             print(preds)
             print(preds_extra)
+            print(preds_extra_sm1)
+            print(preds_extra_sm2)
             print(tilt_from_xy(preds_extra[:,-2:]))
             print(names)
 
         # Explicitly declare reduction to mean.
         loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction='none')#(reduction="mean")
+        #print('loss func')
+        #print(loss_fun)
+        loss_fun = soft_bce_categories
         # Apply "Huber loss" to regression terms -- L2 under norm 1.0, L1 otherwise (not as sensitive to outliers)
         loss_fun_extra = torch.nn.SmoothL1Loss(reduction='none')
         #loss_fun_extra = torch.nn.MSELoss(reduction='none')
         loss_fun_degrees = normal_degrees_loss
 
         # Compute the loss.
-        c_loss = loss_fun(preds, labels)
+        c_loss, _ = loss_fun(preds, labels.unsqueeze(1)) # direct from network
+        c_loss = torch.mean(c_loss, dim=1)
+        #c_loss = loss_fun(preds, labels)
+        if debug:
+            print(c_loss)
+        #c_loss = loss_fun(preds_extra_sm1, labels) # via bottleneck
         #r_loss = loss_fun_extra(preds_extra, labels_extra)
         # HACK -- "normal" regression loss, except the last two columns ([x,y] for spin axis)
         r_loss = loss_fun_extra(preds_extra[:,:-2], labels_extra[:,:-1])
@@ -233,6 +324,11 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
         # Perform the backward pass.
         optimizer.zero_grad()
         loss.backward()
+
+        # Grad clip!
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
         # Update the parameters.
         optimizer.step()
 
@@ -303,7 +399,8 @@ def train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg,
 
 
 @torch.no_grad()
-def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=10., debug=False):
+def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=R_LOSS_WEIGHT,
+    shared_embedding=SHARE_EMBED, debug=False):
     """
     Evaluate the model on the val set.
     Args:
@@ -318,6 +415,11 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=10., 
     # Evaluation mode enabled. The running stats would not be updated.
     model.eval()
     val_meter.iter_tic()
+
+    # HACK -- define "soft" loss function...
+    soft_bce_categories = SoftBCEWithLogitsLoss(label_smoothing=LABEL_SMOOTH_VAL,
+        num_classes=len(PITCH_TYPES), close_match_window=4.)
+        #pos_weight=torch.Tensor([args.fp_train_weight,1.,1.]).cuda())
 
     # Hack -- save details and biggest errors
     outputs = []
@@ -404,6 +506,12 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=10., 
                 preds_extra = preds_extra_all[0]
                 preds_extra_sm1 = preds_extra_all[1]
                 preds_extra_sm2 = preds_extra_all[2]
+
+                # HACK -- use shared embeddings (for regularization)
+                if shared_embedding:
+                    preds = preds_extra_sm1
+
+
             else:
                 preds = preds_all
                 preds_extra = None
@@ -415,10 +523,17 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=10., 
             # Save validation losses.
             # Explicitly declare reduction to mean.
             loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="none")#(reduction="mean")
+            loss_fun = soft_bce_categories
             # Apply "Huber loss" to regression terms -- L2 under norm 1.0, L1 otherwise (not as sensitive to outliers)
             loss_fun_extra = torch.nn.SmoothL1Loss(reduction="none")
             #loss_fun_extra = torch.nn.MSELoss(reduction="none")
-            c_loss = loss_fun(preds, labels)
+
+            #c_loss = loss_fun(preds, labels)
+            # Compute the loss.
+            c_loss, _ = loss_fun(preds, labels.unsqueeze(1)) # direct from network
+            c_loss = torch.mean(c_loss, dim=1)
+
+            #c_loss = loss_fun(preds_extra_sm1, labels) # via bottleneck
             #r_loss = loss_fun_extra(preds_extra, labels_extra)
             # HACK -- "normal" regression loss, except the last two columns ([x,y] for spin axis)
             r_loss = loss_fun_extra(preds_extra[:,:-2], labels_extra[:,:-1])
@@ -435,7 +550,7 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, r_loss_weight=10., 
                 # Calculate spin axis degree from predicted X,Y
                 spin_axis_out = tilt_from_xy(preds_extra[:,-2:])
 
-                val_outs = np.concatenate((val_outs, preds.detach().cpu().numpy(),
+                val_outs = np.concatenate((val_outs,  preds.detach().cpu().numpy(),
                     preds_extra.detach().cpu().numpy(),
                     spin_axis_out.unsqueeze(1).cpu().numpy(),
                     c_loss.unsqueeze(1).detach().cpu().numpy(),

@@ -150,6 +150,8 @@ class ResNetBasicHead(nn.Module):
         mlp_sizes = [],
         softmax_outputs = [],
         mlp_dropout = 0.1,
+        mlp_norm = 'layer',
+        use_maxpool = False,
     ):
         """
         The `__init__` method of any subclass should also contain these
@@ -175,15 +177,32 @@ class ResNetBasicHead(nn.Module):
         ), "pathway dimensions are not consistent."
         self.num_pathways = len(pool_size)
 
+        # Hack! Try adding max pools as well?
+        self.use_maxpool = use_maxpool
+        print('Using pool size/shape:')
+        print(pool_size)
+        if self.use_maxpool:
+            dim_in *= 2
         for pathway in range(self.num_pathways):
             avg_pool = nn.AvgPool3d(pool_size[pathway], stride=1)
             self.add_module("pathway{}_avgpool".format(pathway), avg_pool)
+
+            if self.use_maxpool:
+                max_pool = nn.MaxPool3d(pool_size[pathway], stride=1)
+                self.add_module("pathway{}_maxpool".format(pathway), max_pool)
 
         if dropout_rate > 0.0:
             self.dropout = nn.Dropout(dropout_rate)
         # Perform FC in a fully convolutional manner. The FC layer will be
         # initialized with a different std comparing to convolutional layers.
         #init_proj =
+
+        # normalization?
+        # TODO -- set as optional parameter
+        if mlp_norm and mlp_norm.lower() == 'layer':
+            self.norm_layer = nn.LayerNorm(sum(dim_in), elementwise_affine=False)
+        else:
+            self.norm_layer = nn.Identity()
 
         self.layer_sizes = [sum(dim_in)] + list(map(int, mlp_sizes)) + [num_classes]
         self.nonlinearity = nn.LeakyReLU(0.2)
@@ -195,11 +214,12 @@ class ResNetBasicHead(nn.Module):
             #layer_list.extend([nn.Dropout(dropout_rate)])
 
             layer_list.extend(list(chain.from_iterable(
-                [[nn.Linear(self.layer_sizes[i], self.layer_sizes[i+1]), self.nonlinearity, nn.Dropout(mlp_dropout)] for i in range(len(self.layer_sizes) - 1)]
+                [[nn.Linear(self.layer_sizes[i], self.layer_sizes[i+1]), self.nonlinearity,  nn.Dropout(mlp_dropout), ] for i in range(len(self.layer_sizes) - 1)]
             )))
             # HACK -- drop nonlinearity and dropout, for final output.
             if len(softmax_outputs) == 0:
                 layer_list = layer_list[:-2]
+                #layer_list = layer_list[:-3]
                 print('Projection layer:')
                 print(layer_list)
                 self.projection = nn.Sequential(*layer_list)
@@ -207,6 +227,7 @@ class ResNetBasicHead(nn.Module):
             else:
                 # HACK -- separate out at final layer... produce several outputs
                 layer_list = layer_list[:-3]
+                #layer_list = layer_list[:-4]
                 print('Projection layer:')
                 print(layer_list)
                 self.projection = nn.Sequential(*layer_list)
@@ -237,17 +258,43 @@ class ResNetBasicHead(nn.Module):
                 "function.".format(act_func)
             )
 
-    def forward(self, inputs):
+    def forward(self, inputs, debug=False):
         assert (
             len(inputs) == self.num_pathways
         ), "Input tensor does not contain {} pathway".format(self.num_pathways)
         pool_out = []
+        if debug:
+            print('Debug HEAD forward pass')
+            print('examining %d pathways' % self.num_pathways)
+            print('Inputs:')
+            print([i.shape for i in inputs])
+            print('~')
         for pathway in range(self.num_pathways):
             m = getattr(self, "pathway{}_avgpool".format(pathway))
-            pool_out.append(m(inputs[pathway]))
+            t = m(inputs[pathway])
+            pool_out.append(t)
+
+            if debug:
+                print(t.shape)
+
+            if self.use_maxpool:
+                m = getattr(self, "pathway{}_maxpool".format(pathway))
+                pool_out.append(m(inputs[pathway]))
+
         x = torch.cat(pool_out, 1)
+
+        if debug:
+            print('cat all pools output')
+            print(len(pool_out))
+            print(x.shape)
+
         # (N, C, T, H, W) -> (N, T, H, W, C).
         x = x.permute((0, 2, 3, 4, 1))
+
+        # Layer Norm *before* dropout
+        if hasattr(self, "norm_layer"):
+            x = self.norm_layer(x)
+
         # Perform dropout.
         if hasattr(self, "dropout"):
             x = self.dropout(x)
@@ -257,6 +304,8 @@ class ResNetBasicHead(nn.Module):
             xl = []
             for l in self.final_layers:
                 xf = l(x)
+                if debug:
+                    print(xf.shape)
                 xf = xf.view(xf.shape[0], -1)
                 xl.append(xf)
         else:
@@ -272,5 +321,9 @@ class ResNetBasicHead(nn.Module):
             x = self.act(x)
             x = x.mean([1, 2, 3])
         """
+        if debug:
+            print('returning XL')
+            print(len(xl), [l.shape for l in xl])
+
         #x = x.view(x.shape[0], -1)
         return xl

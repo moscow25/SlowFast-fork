@@ -321,6 +321,45 @@ class SlowFastModel(nn.Module):
             dilation=cfg.RESNET.SPATIAL_DILATIONS[3],
         )
 
+        pool_size_1 = [
+                    [
+                        cfg.DATA.NUM_FRAMES
+                        // cfg.SLOWFAST.ALPHA
+                        // pool_size[0][0],
+                        1,
+                        1,
+                    ],
+                    [cfg.DATA.NUM_FRAMES // pool_size[1][0], 1, 1],
+                ]
+
+        HACK_ADJUST = 2 # 1
+
+        pool_size_2 = [
+                    [
+                        cfg.DATA.NUM_FRAMES
+                        // cfg.SLOWFAST.ALPHA
+                        // pool_size[0][0],
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][1] * HACK_ADJUST,
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][2] * HACK_ADJUST,
+                    ],
+                    [
+                        cfg.DATA.NUM_FRAMES // pool_size[1][0],
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][1] * HACK_ADJUST,
+                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][2] * HACK_ADJUST,
+                    ],
+                ]
+
+        print('Pool sizes:')
+        print(pool_size_1)
+        print(pool_size_2)
+
+        resolution=[[cfg.DETECTION.ROI_XFORM_RESOLUTION] * 2] * 2
+        scale_factor=[cfg.DETECTION.SPATIAL_SCALE_FACTOR] * 2
+
+        print('resolution, scale_factor')
+        print(resolution, scale_factor)
+
+
         if cfg.DETECTION.ENABLE:
             self.head = head_helper.ResNetRoIHead(
                 dim_in=[
@@ -351,20 +390,7 @@ class SlowFastModel(nn.Module):
                     width_per_group * 32 // cfg.SLOWFAST.BETA_INV,
                 ],
                 num_classes=cfg.MODEL.NUM_CLASSES,
-                pool_size=[
-                    [
-                        cfg.DATA.NUM_FRAMES
-                        // cfg.SLOWFAST.ALPHA
-                        // pool_size[0][0],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][1],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][2],
-                    ],
-                    [
-                        cfg.DATA.NUM_FRAMES // pool_size[1][0],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][1],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][2],
-                    ],
-                ],
+                pool_size=pool_size_2,
                 dropout_rate=cfg.MODEL.DROPOUT_RATE,
             )
 
@@ -382,20 +408,7 @@ class SlowFastModel(nn.Module):
                 ],
                 #num_classes=cfg.MODEL.NUM_CLASSES,
                 num_classes=NUM_PITCH_TYPES,
-                pool_size=[
-                    [
-                        cfg.DATA.NUM_FRAMES
-                        // cfg.SLOWFAST.ALPHA
-                        // pool_size[0][0],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][1],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][2],
-                    ],
-                    [
-                        cfg.DATA.NUM_FRAMES // pool_size[1][0],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][1],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][2],
-                    ],
-                ],
+                pool_size=pool_size_2,
                 dropout_rate=cfg.MODEL.DROPOUT_RATE,
                 act_func="none",
             )
@@ -408,28 +421,17 @@ class SlowFastModel(nn.Module):
                 ],
                 #num_classes=cfg.MODEL.NUM_CLASSES,
                 num_classes=NUM_SPIN_TYPES,
-                pool_size=[
-                    [
-                        cfg.DATA.NUM_FRAMES
-                        // cfg.SLOWFAST.ALPHA
-                        // pool_size[0][0],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][1],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[0][2],
-                    ],
-                    [
-                        cfg.DATA.NUM_FRAMES // pool_size[1][0],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][1],
-                        cfg.DATA.CROP_SIZE // 32 // pool_size[1][2],
-                    ],
-                ],
+                pool_size=pool_size_2,
                 dropout_rate=cfg.MODEL.DROPOUT_RATE,
                 act_func="none",
-                mlp_sizes=[512, 64],
-                softmax_outputs= [NUM_SLOT_ANGLES, NUM_HANDS],
-                mlp_dropout=0.1,
+                mlp_sizes=[512], #[512], #[256], # [512, 64],
+                softmax_outputs= [NUM_PITCH_TYPES, NUM_SLOT_ANGLES],
+                mlp_dropout=0.5, #0.3, #0.5, #0.3, # 0.1
+                mlp_norm='layer', # 'layer'
+                use_maxpool=False, # mean pool only?
             )
 
-    def forward(self, x, bboxes=None, debug=True):
+    def forward(self, x, bboxes=None, debug=False):
         #if debug:
         #    print('model *forward* pass')
         x = self.s1(x)
@@ -445,8 +447,12 @@ class SlowFastModel(nn.Module):
         x = self.s4_fuse(x)
         x = self.s5(x)
         if self.enable_detection:
+            #print('Forward -- dection enabled!')
             x1 = self.head(x, bboxes)
+            assert False
         else:
+
+            #print('Forward -- detection disabled!')
 
             #if debug:
             #    print('preparing output')
@@ -465,9 +471,12 @@ class SlowFastModel(nn.Module):
 
         # TODO: Manage outputs -- how many heads, how is it handled -- named outputs?
         if debug:
-            return y, z
-        else:
-            return x1
+            print('return y, z')
+            print(y.shape, len(z), [l.shape for l in z])
+            #assert False
+        return y, z
+        #else:
+        #    return x1
 
 
 class ResNetModel(nn.Module):
